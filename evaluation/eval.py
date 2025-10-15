@@ -14,7 +14,6 @@ locations) and provide an OpenAI-compatible API key to run evaluations.
 
 from __future__ import annotations
 
-import argparse
 import json
 import logging
 import os
@@ -25,6 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from openai import OpenAI
+from simple_parsing import ArgumentParser
 
 
 # ---------------------------------------------------------------------------
@@ -130,7 +130,7 @@ SCORE_PROMPT_ZH = """
 </article_2>
 
 **评估标准**
-现在，你需要根据以下**评判标准列表**，逐条评估并比较这两篇文章的表现，输出对比分析，然后给出0-10的分数。每个标准都附有其解释，请仔细理解。
+现在，你需要根据以下**评判标准列表**，逐条评估并比较这两篇文章的表现，输出对比分析，然后给出0-10的分数。每个标准都���有其解释，请仔细理解。
 
 <criteria_list>
 {criteria_list}
@@ -197,6 +197,9 @@ SCORE_PROMPT_ZH = """
 
 @dataclass(frozen=True)
 class TaskRecord:
+    '''
+    Data class for task records.
+    '''
     id: Any
     prompt: str
     language: str
@@ -204,6 +207,9 @@ class TaskRecord:
 
 @dataclass(frozen=True)
 class ArticleRecord:
+    '''
+    Data class for article records.
+    '''
     id: Any
     prompt: str
     article: str
@@ -211,6 +217,9 @@ class ArticleRecord:
 
 @dataclass
 class EvaluationResult:
+    '''
+    Data class for evaluation results.
+    '''
     id: Any
     prompt: str
     comprehensiveness: float
@@ -227,6 +236,9 @@ class EvaluationResult:
 
 
 def load_jsonl(path: Path) -> List[Dict[str, Any]]:
+    '''
+    Load JSONL file.
+    '''
     data: List[Dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
@@ -238,7 +250,9 @@ def load_jsonl(path: Path) -> List[Dict[str, Any]]:
 
 
 def format_criteria_list(criteria_data: Dict[str, Any]) -> str:
-    """Format evaluation criteria list as JSON string, omitting weights."""
+    '''
+    Format evaluation criteria list as JSON string, omitting weights.
+    '''
     criteria_for_prompt: Dict[str, List[Dict[str, str]]] = {}
 
     for dim, criterions in criteria_data.get("criterions", {}).items():
@@ -261,7 +275,9 @@ def format_criteria_list(criteria_data: Dict[str, Any]) -> str:
 
 
 def extract_json_from_markdown(text: str) -> Optional[str]:
-    """Extract JSON from plain responses or fenced blocks (utils/json_extractor.py)."""
+    '''
+    Extract JSON from plain responses or fenced blocks
+    '''
     if not isinstance(text, str):
         return None
 
@@ -313,7 +329,9 @@ def calculate_weighted_scores(
     llm_output_json: Dict[str, List[Dict[str, Any]]],
     criteria_data: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Weighted scoring copied from utils/score_calculator.py."""
+    '''
+    Weighted scoring
+    '''
     results = {
         "target": {"dims": {}, "total": 0.0},
         "reference": {"dims": {}, "total": 0.0},
@@ -404,6 +422,9 @@ def build_judge_prompt(
     article_2: str,
     criteria_list: str,
 ) -> str:
+    '''
+    Build judge prompt
+    '''
     template = SCORE_PROMPT_ZH if language == "zh" else SCORE_PROMPT_EN
     return template.format(
         task_prompt=task_prompt,
@@ -420,7 +441,9 @@ def call_judge(
     max_retries: int = 5,
     backoff: float = 1.5,
 ) -> Dict[str, Any]:
-    """Call the LLM judge and return parsed JSON."""
+    '''
+    Call the LLM judge and return parsed JSON.
+    '''
 
     for attempt in range(max_retries):
         try:
@@ -447,6 +470,9 @@ def call_judge(
 
 
 def normalize_dimension(target: float, reference: float) -> float:
+    '''
+    Normalize dimension
+    '''
     denom = target + reference
     if denom <= 0:
         return 0.0
@@ -461,6 +487,9 @@ def evaluate_single_prompt(
     reference_article: ArticleRecord,
     criteria: Dict[str, Any],
 ) -> EvaluationResult:
+    '''
+    Evaluate single prompt
+    '''
     criteria_list_str = format_criteria_list(criteria)
     judge_prompt = build_judge_prompt(
         language=task.language,
@@ -512,6 +541,9 @@ def build_maps(
     record_cls,
     required_fields: Tuple[str, ...],
 ) -> Dict[str, Any]:
+    '''
+    Build maps
+    '''
     mapping: Dict[str, Any] = {}
     for row in items:
         if not all(field in row for field in required_fields):
@@ -526,6 +558,9 @@ def load_inputs(
     reference_path: Path,
     criteria_path: Path,
 ) -> Tuple[List[TaskRecord], Dict[str, ArticleRecord], Dict[str, ArticleRecord], Dict[str, Dict[str, Any]]]:
+    '''
+    Load inputs
+    '''
     tasks = [
         TaskRecord(id=row.get("id"), prompt=row["prompt"], language=row.get("language", "en"))
         for row in load_jsonl(queries_path)
@@ -549,6 +584,9 @@ def filter_tasks(
     language: Optional[str],
     limit: Optional[int],
 ) -> List[TaskRecord]:
+    '''
+    Filter tasks
+    '''
     filtered = []
     for task in tasks:
         if language and task.language != language:
@@ -562,6 +600,9 @@ def filter_tasks(
 
 
 def aggregate_results(results: List[EvaluationResult]) -> Dict[str, float]:
+    '''
+    Aggregate results
+    '''
     if not results:
         return {}
 
@@ -577,7 +618,10 @@ def aggregate_results(results: List[EvaluationResult]) -> Dict[str, float]:
     }
 
 
-def run_evaluation(args: argparse.Namespace) -> List[EvaluationResult]:
+def run_evaluation(args: "EvalConfig") -> List[EvaluationResult]:
+    '''
+    Run evaluation
+    '''
     tasks, target_map, reference_map, criteria_map = load_inputs(
         args.queries, args.target, args.reference, args.criteria
     )
@@ -625,6 +669,9 @@ def run_evaluation(args: argparse.Namespace) -> List[EvaluationResult]:
 
 
 def save_results(results: List[EvaluationResult], output_path: Path) -> None:
+    '''
+    Save results
+    '''
     with output_path.open("w", encoding="utf-8") as handle:
         for item in results:
             line = {
@@ -641,40 +688,56 @@ def save_results(results: List[EvaluationResult], output_path: Path) -> None:
 
 
 def save_summary(summary: Dict[str, float], summary_path: Path) -> None:
+    '''
+    Save summary
+    '''
     if not summary:
         return
     with summary_path.open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, ensure_ascii=False, indent=2)
 
 
-def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Minimal DeepResearch RACE evaluator")
-    parser.add_argument("--target", type=Path, required=True, help="JSONL of model outputs to score")
-    parser.add_argument("--queries", type=Path, default=Path("data/prompt_data/query.jsonl"))
-    parser.add_argument("--reference", type=Path, default=Path("data/test_data/cleaned_data/reference.jsonl"))
-    parser.add_argument("--criteria", type=Path, default=Path("data/criteria_data/criteria.jsonl"))
-    parser.add_argument("--language", choices=["all", "en", "zh"], default="all")
-    parser.add_argument("--limit", type=int, default=None, help="Optional cap on number of prompts")
-    parser.add_argument("--max-workers", type=int, default=4)
-    parser.add_argument(
-        "--judge-model",
-        type=str,
-        default="gpt-4.1-2025-04-14",
-        help="LLM judge model name",
-    )
-    parser.add_argument("--api-key", type=str, default=os.environ.get("OPENAI_API_KEY"))
-    parser.add_argument("--output", type=Path, default=Path("race_raw_results.jsonl"))
-    parser.add_argument("--summary", type=Path, default=Path("race_summary.json"))
+@dataclass
+class EvalConfig:
+    '''
+    Minimal DeepResearch RACE evaluator configuration
+    '''
 
+    target: Path  # JSONL of model outputs to score
+    queries: Path = Path("data/prompt_data/query.jsonl")
+    reference: Path = Path("data/test_data/cleaned_data/reference.jsonl")
+    criteria: Path = Path("data/criteria_data/criteria.jsonl")
+    language: str = "all"  # Language filter: 'all', 'en', or 'zh'
+    limit: Optional[int] = None  # Optional cap on number of prompts
+    max_workers: int = 4
+    judge_model: str = "gpt-4.1-2025-04-14"  # LLM judge model name
+    api_key: Optional[str] = None  # OpenAI API key (falls back to OPENAI_API_KEY env var)
+    output: Path = Path("race_raw_results.jsonl")
+    summary: Path = Path("race_summary.json")
+
+    def __post_init__(self):
+        if self.api_key is None:
+            self.api_key = os.environ.get("OPENAI_API_KEY")
+        if not self.api_key:
+            raise ValueError("Provide an OpenAI API key via --api-key or OPENAI_API_KEY")
+        if self.language not in ["all", "en", "zh"]:
+            raise ValueError(f"Invalid language: {self.language}. Must be 'all', 'en', or 'zh'")
+
+
+def parse_args(argv: Optional[List[str]] = None) -> EvalConfig:
+    '''
+    Parse arguments
+    '''
+    parser = ArgumentParser(description="Minimal DeepResearch RACE evaluator")
+    parser.add_arguments(EvalConfig, dest="config")
     args = parser.parse_args(argv)
-
-    if not args.api_key:
-        parser.error("Provide an OpenAI API key via --api-key or OPENAI_API_KEY")
-
-    return args
+    return args.config
 
 
 def configure_logging() -> None:
+    '''
+    Configure logging
+    '''
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -682,6 +745,9 @@ def configure_logging() -> None:
 
 
 def main(argv: Optional[List[str]] = None) -> None:
+    '''
+    Main function
+    '''
     configure_logging()
     args = parse_args(argv)
 
@@ -702,6 +768,6 @@ def main(argv: Optional[List[str]] = None) -> None:
     logging.info("Summary: %s", summary)
 
 
-if __name__ == "__main__":  # pragma: no cover - CLI entrypoint
+if __name__ == "__main__":
     main()
 
