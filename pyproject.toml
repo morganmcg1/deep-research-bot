@@ -1,0 +1,20 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "deep-research-bot"
+version = "0.1.0"
+description = "Minimal DeepResearch agent"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12"
+authors = [{ name = "Deep Research Bot Maintainers" }]
+dependencies = [
+    "openai",
+    "simple-parsing",
+]
+
+[project.scripts]
+deep-research-eval = "eval:main"
+
