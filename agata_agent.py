@@ -11,9 +11,9 @@ Weights & Biases Inference [docs](https://docs.wandb.ai/guides/inference/)
 ##Imports + API keys
 """
 
-!pip install exa-py
-!pip install wandb
-!pip install weave
+!uv pip install exa-py
+!uv pip install wandb
+!uv pip install weave
 
 # Global Configuration & Setup
 import inspect
@@ -27,10 +27,11 @@ from rich.pretty import pprint
 from typing import Any, Callable, Dict, List, get_type_hints
 from exa_py import Exa
 from datetime import datetime
+from google.colab import userdata
 
-OPENAI_API_KEY="XXX",
-EXA_API_KEY="XXX"
-WANDB_API_KEY="XXX"
+EXA_API_KEY=userdata.get('EXA_API_KEY')
+OPENAI_API_KEY=userdata.get('OPENAI_API_KEY')
+WANDB_API_KEY=userdata.get('WANDB_API_KEY')
 
 import openai
 
@@ -39,14 +40,14 @@ client = openai.OpenAI(
     #base_url='https://api.inference.wandb.ai/v1',
 
     # Get your API key from https://wandb.ai/authorize
-    api_key="XXX",
+    api_key=OPENAI_API_KEY,
 
 
     # Optional: Team and project for usage tracking
     #project="<your-team>/<your-project>",
 )
 
-weave.init("wandb-applied-ai-team/fc-session")
+weave.init("wandb-applied-ai-team/london-workshop-2025")
 
 """##Helper functions"""
 
@@ -193,6 +194,7 @@ DEEP_RESEARCH_AGENT_PROMPT = """
   Your job is to use tools to gather information about the user's input topic.
   You can use any of the tools provided to you to find resources that can help answer the research question.
   You can call these tools in series or in parallel, your research is conducted in a tool-calling loop.
+  Your response should be a thorough answer to the user's question, citing sources and reasoning, providing an overview of the facts or any gaps in the subject.
   </Task>
 
   <Available Tools>
@@ -213,7 +215,7 @@ DEEP_RESEARCH_AGENT_PROMPT = """
   3. **After each search, pause and assess** - Do I have enough to answer? What's still missing?
   4. **Execute narrower searches as you gather information** - Fill in the gaps
   5. **Stop when you can answer confidently** - Don't keep searching for perfection
-  6. **Provide an answer** - At the end always provide the answer from what you can from your research but do mention any gaps you might expect.
+  6. **Provide an answer** - At the end, always provide the answer from your research.
   </Instructions>
 
   <Hard Limits>
@@ -395,5 +397,5 @@ if __name__ == "__main__":
 		system_message=DEEP_RESEARCH_AGENT_PROMPT.format(date=get_today_str()),
 		tools=[clarification, planning, think_tool, exa_search]
 	)
-	state = agent.run(user_prompt="What is the best city to visit in Europe? Ask me clarifying questions")
+	state = agent.run(user_prompt="What type of vegan milk alternative is the healthiest?")
 	print(f"Final response: {state.final_assistant_content}")
