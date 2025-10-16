@@ -9,8 +9,15 @@ authors = [{ name = "Deep Research Bot Maintainers" }]
 dependencies = [
     "openai",
     "simple-parsing",
+    "pytest",
+]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore::pydantic.warnings.PydanticDeprecatedSince211",
+    "ignore:.*Hub is deprecated.*::",
+    "ignore:The 'warn' method is deprecated, use 'warning' instead:DeprecationWarning",
 ]
 
 [project.scripts]
 deep-research-eval = "eval:main"
-
