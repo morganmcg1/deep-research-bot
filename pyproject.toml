@@ -7,9 +7,16 @@ license = { file = "LICENSE" }
 requires-python = ">=3.12"
 authors = [{ name = "Deep Research Bot Maintainers" }]
 dependencies = [
-    "openai",
-    "simple-parsing",
+    "exa-py>=1.16.1",
+    "ipykernel>=7.0.1",
+    "jupyterlab>=4.4.9",
+    "openai>=2.3.0",
     "pytest",
+    "pydantic>=2.0",
+    "python-dotenv",
+    "rich>=14.2.0",
+    "simple-parsing>=0.1.7",
+    "weave>=0.52.9",
 ]
 
 [tool.pytest.ini_options]
