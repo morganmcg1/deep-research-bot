@@ -7,3 +7,6 @@ If you have the wandb MCP server tools available to you; When asked to instrumen
 
 ## Testing
 Always run tests with `uv` and `pytest`, e.g. `uv run pytest`
+
+## Structured data
+Always try use pydantic objects when passing around and retrning data, avoid using jon.dumps
