@@ -28,9 +28,23 @@ from typing import Any, Callable, Dict, List, get_type_hints
 from exa_py import Exa
 from datetime import datetime
 
-OPENAI_API_KEY="XXXA",
+OPENAI_API_KEY="XXX",
 EXA_API_KEY="XXX"
 WANDB_API_KEY="XXX"
+
+import openai
+
+client = openai.OpenAI(
+    # The custom base URL points to W&B Inference
+    #base_url='https://api.inference.wandb.ai/v1',
+
+    # Get your API key from https://wandb.ai/authorize
+    api_key="XXX",
+
+
+    # Optional: Team and project for usage tracking
+    #project="<your-team>/<your-project>",
+)
 
 weave.init("wandb-applied-ai-team/fc-session")
 
@@ -199,6 +213,7 @@ DEEP_RESEARCH_AGENT_PROMPT = """
   3. **After each search, pause and assess** - Do I have enough to answer? What's still missing?
   4. **Execute narrower searches as you gather information** - Fill in the gaps
   5. **Stop when you can answer confidently** - Don't keep searching for perfection
+  6. **Provide an answer** - At the end always provide the answer from what you can from your research but do mention any gaps you might expect.
   </Instructions>
 
   <Hard Limits>
@@ -250,7 +265,8 @@ def clarification(clarifying_questions):
 
   If there are acronyms, abbreviations, or unknown terms, ask the user to clarify.
   If you need to ask a question, follow these guidelines:
-  - Be concise while gathering all necessary information
+  - Be concise while gathering all necessary information.
+  - Only ask max 3 questions.
   - Make sure to gather all the information needed to carry out the research task in a concise, well-structured manner.
   - Use bullet points or numbered lists if appropriate for clarity. Make sure that this uses markdown formatting and will be rendered correctly if the string output is passed to a markdown renderer.
   - Don't ask for unnecessary information, or information that the user has already provided. If you can see that the user has already provided the information, do not ask for it again.
@@ -381,7 +397,3 @@ if __name__ == "__main__":
 	)
 	state = agent.run(user_prompt="What is the best city to visit in Europe? Ask me clarifying questions")
 	print(f"Final response: {state.final_assistant_content}")
-
-"""clarify before plan, only clarify once, max 3 questions
-state
-"""
