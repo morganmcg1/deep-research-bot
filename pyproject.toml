@@ -16,7 +16,7 @@ dependencies = [
     "python-dotenv",
     "rich>=14.2.0",
     "simple-parsing>=0.1.7",
-    "weave>=0.52.9",
+    "weave>=0.52.10",
 ]
 
 [tool.pytest.ini_options]

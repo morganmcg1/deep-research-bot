@@ -46,13 +46,14 @@ from typing import (
 from tenacity import retry, stop_after_attempt, wait_exponential
 import weave
 from dotenv import load_dotenv
-from judge_prompts import (
+from .judge_prompts import (
     SCORE_PROMPT_EN,
     SCORE_PROMPT_ZH,
     SYSTEM_PROMPT_EN,
     SYSTEM_PROMPT_ZH,
     JudgeOutput,
 )
+from .eval_config import EvalConfig, EvaluationMode
 from openai import OpenAI
 from pydantic import BaseModel, Field, PrivateAttr
 from simple_parsing import ArgumentParser
@@ -103,13 +104,6 @@ class EvaluationResult(BaseModel):
     readability: float
     overall_score: float
     raw_judge: JudgeOutput
-
-
-class EvaluationMode(str, Enum):
-    """Evaluation execution modes."""
-
-    ONLINE = "online"
-    OFFLINE = "offline"
 
 
 AgentCallableReturn = Union[str, Dict[str, Any]]
@@ -330,8 +324,8 @@ def build_judge_prompt(
 
 @weave.op
 @retry(
-    stop=stop_after_attempt(5),
-    wait=wait_exponential(multiplier=1, min=4, max=15),
+    stop=stop_after_attempt(3),
+    wait=wait_exponential(multiplier=1, min=1, max=8),
 )
 def call_judge(
     client: OpenAI,
@@ -351,7 +345,13 @@ def call_judge(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
-        response_format=JudgeOutput,
+        response_format={
+            "type": "json_schema",
+            "json_schema": {
+                "name": "judge_output",
+                "schema": JudgeOutput.model_json_schema()
+            }
+        },
     )
     raw_json = response.choices[0].message.content
     return JudgeOutput.model_validate_json(raw_json)
@@ -412,39 +412,13 @@ class DeepResearchWeaveModel(weave.Model):
             "language": language,
             "candidate_article": candidate_article,
             "reference_article": reference_article,
+            "criteria": criteria or {},
         }
 
         async with self._outputs_lock:
             self._outputs.append(result)
 
         return result
-
-    def consume_outputs(self) -> List[Dict[str, Any]]:
-        """
-        Return and clear latest model outputs collected during evaluation.
-        """
-        outputs: List[Dict[str, Any]]
-        if self._outputs:
-            outputs = []
-            for item in self._outputs:
-                output_copy = dict(item)
-                weighted = output_copy.get("weighted_scores")
-                if isinstance(weighted, dict):
-                    output_copy["normalized_scores"] = compute_normalized_scores(
-                        weighted
-                    )
-                outputs.append(output_copy)
-            self._outputs.clear()
-            return outputs
-        return []
-
-    def reset_outputs(self) -> None:
-        """
-        Clear any stored outputs prior to running an evaluation.
-        """
-        if self._outputs:
-            self._outputs.clear()
-
 
 class DeepResearchScorer(weave.Scorer):
     """
@@ -459,8 +433,8 @@ class DeepResearchScorer(weave.Scorer):
     api_key: str = ""
     criteria: Dict[str, Any] = {}
 
-    def _call_judge_sync(self, system_prompt: str, judge_prompt: str) -> JudgeOutput:
-        client = OpenAI(api_key=self.api_key)
+    def _call_judge_sync(self, judge_prompt: str, system_prompt: str) -> JudgeOutput:
+        client = OpenAI(api_key=self.api_key or None)
         return call_judge(
             client=client,
             system_prompt=system_prompt,
@@ -470,11 +444,12 @@ class DeepResearchScorer(weave.Scorer):
         )
 
     @weave.op()
-    def score(self, *, output: Dict[str, Any], **_: Any) -> Dict[str, Any]:
+    def score(self, *, output: Dict[str, Any], criteria: Dict[str, Any]) -> Dict[str, Any]:
         '''
         Score the output using the judge model.
         '''
-        criteria_list_str = format_criteria_list(self.criteria)
+        # Prefer per-row criteria if present; fall back to scorer-level default
+        criteria_list_str = format_criteria_list(criteria)
 
         system_prompt, judge_prompt = build_judge_prompt(
             language=output["language"],
@@ -484,8 +459,8 @@ class DeepResearchScorer(weave.Scorer):
             criteria_list=criteria_list_str,
         )
 
-        judge_output = self._call_judge_sync(system_prompt, judge_prompt)
-        weighted_scores = calculate_weighted_scores(judge_output, self.criteria)
+        judge_output = self._call_judge_sync(judge_prompt, system_prompt)
+        weighted_scores = calculate_weighted_scores(judge_output, criteria)
 
         normalized_scores = compute_normalized_scores(
             weighted_scores if isinstance(weighted_scores, dict) else {}
@@ -621,6 +596,8 @@ def load_inputs(
     criteria_map: Dict[str, Dict[str, Any]] = {
         row["prompt"]: row for row in load_jsonl(criteria_path) if "prompt" in row
     }
+    assert len(reference_map) > 0, "No reference map provided"
+    assert len(criteria_map) > 0, "No criteria map provided"
 
     return tasks, target_map, reference_map, criteria_map
 
@@ -664,6 +641,9 @@ def build_evaluation_dataset(
     Construct dataset rows passed into weave.Evaluation.
     """
     dataset_rows: List[Dict[str, Any]] = []
+    if len(tasks) == 0:
+        raise ValueError("No tasks provided for evaluation")
+
     for index, task in enumerate(tasks):
         target_entry = target_map.get(task.prompt)
         reference_entry = reference_map.get(task.prompt)
@@ -691,26 +671,8 @@ def build_evaluation_dataset(
                 "trial_index": 0,
             }
         )
+    assert len(dataset_rows) > 0, "No dataset rows added during evaluation build"
     return dataset_rows
-
-
-def expand_dataset_trials(
-    dataset_rows: List[Dict[str, Any]], trials: int
-) -> List[Dict[str, Any]]:
-    """
-    Expand dataset rows to account for requested number of trials.
-    """
-    if trials <= 1:
-        return dataset_rows
-    expanded: List[Dict[str, Any]] = []
-    for row in dataset_rows:
-        base_index = row["row_index"]
-        for trial in range(trials):
-            duplicated = row.copy()
-            duplicated["trial_index"] = trial
-            duplicated["row_index"] = base_index * trials + trial
-            expanded.append(duplicated)
-    return expanded
 
 
 def outputs_to_evaluation_results(
@@ -780,7 +742,7 @@ def _resolve_wandb_project(config: "EvalConfig") -> Optional[str]:
 def _prepare_weave_attributes(
     config: "EvalConfig", extra: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    attributes = dict(config.weave_attributes or {})
+    attributes = {}
     if extra:
         attributes.update(extra)
     attributes.setdefault("evaluation_name", config.evaluation_name)
@@ -794,12 +756,21 @@ def run_evaluation(
     args: "EvalConfig",
     agent_callable: Optional[AgentCallable] = None,
     weave_attributes: Optional[Dict[str, Any]] = None,
-) -> Tuple[List[EvaluationResult], Dict[str, float]]:
+) -> Union[
+    Tuple[List[EvaluationResult], Dict[str, float]],
+    Awaitable[Tuple[List[EvaluationResult], Dict[str, float]]],
+]:
     """
     Run evaluation through weave.Evaluation across online or offline modes.
+
+    When invoked from synchronous code this function returns the evaluation
+    results immediately. When invoked from an active asyncio event loop (e.g.,
+    inside a notebook cell executed with ``await``) it returns an awaitable
+    coroutine so the caller can ``await`` it without triggering
+    ``asyncio.run`` nesting errors.
     """
-    if not args.api_key:
-        raise ValueError("Provide an OpenAI API key via --api-key or OPENAI_API_KEY")
+    if not os.environ.get("OPENAI_API_KEY"):
+        raise ValueError("OPENAI_API_KEY is not set, please set it in the .env file.")
 
     if args.debug:
         args.limit = 2
@@ -858,60 +829,60 @@ def run_evaluation(
         criteria_map,
         require_target=require_target,
     )
-    dataset_rows = expand_dataset_trials(dataset_rows, args.trials)
+    if args.debug:
+        dataset_rows = dataset_rows[:args.limit] if args.limit else dataset_rows[:2] # pylint: disable=unsubscriptable-object
 
-    if not dataset_rows:
-        logging.warning("No dataset rows constructed for evaluation")
-        return [], {}
+    
+    if not dataset_rows or len(dataset_rows) == 0:
+        raise ValueError("No dataset rows constructed for evaluation")
+    print(f"{len(dataset_rows)} dataset rows constructed for evaluation")
 
     if args.weave_parallelism is not None:
         os.environ["WEAVE_PARALLELISM"] = str(args.weave_parallelism)
 
     init_project = _resolve_wandb_project(args)
-    try:
-        if init_project:
-            weave.init(init_project)
-        else:
-            weave.init()
-    except Exception as exc:  # noqa: BLE001
-        logging.warning(
-            "Failed to initialize weave project (%s), continuing locally.", exc
-        )
+    weave.init(init_project)
 
     attributes = _prepare_weave_attributes(args, weave_attributes)
 
-    async def _run_async() -> Sequence[Dict[str, Any]]:
-        evaluation = weave.Evaluation(
-            name=args.evaluation_name,
-            dataset=dataset_rows,
-            scorers=[DeepResearchScorer()],
-            trials=1,
-        )
-
-        model = DeepResearchWeaveModel(
+    evaluation = weave.Evaluation(
+        name=args.evaluation_name,
+        dataset=dataset_rows,
+        scorers=[DeepResearchScorer(
             judge_model=args.judge_model,
             temperature=args.temperature,
-            agent_callable=agent_callable,
-            api_key=args.api_key,
-            max_retries=args.max_retries,
-            backoff=args.retry_backoff,
-        )
-        model.reset_outputs()
+            api_key=os.environ.get("OPENAI_API_KEY"),
+        )],
+        trials=args.trials,
+    )
 
+    model = DeepResearchWeaveModel(
+        judge_model=args.judge_model,
+        temperature=args.temperature,
+        agent_callable=agent_callable,
+        api_key=os.environ.get("OPENAI_API_KEY"),
+        max_retries=args.max_retries,
+        backoff=args.retry_backoff,
+    )
+
+    async def _evaluate() -> Tuple[List[EvaluationResult], Dict[str, float]]:
         with weave.attributes(attributes):
             await evaluation.evaluate(
-                model, __weave={"display_name": args.evaluation_name}
-            )  # pylint: disable=not-callable
+                model,
+                __weave={"display_name": args.evaluation_name},  # pylint: disable=not-callable
+            )
 
-        outputs = model.consume_outputs()
-        return outputs
+        outputs = model._outputs
+        results = outputs_to_evaluation_results(outputs, dataset_rows)
+        results.sort(key=lambda res: res.id if res.id is not None else 1e9)
+        aggregated_summary = aggregate_results(results)
+        return results, aggregated_summary
 
-    outputs = asyncio.run(_run_async())
-    results = outputs_to_evaluation_results(outputs, dataset_rows)
-    results.sort(key=lambda res: res.id if res.id is not None else 1e9)
-    aggregated_summary = aggregate_results(results)
-    return results, aggregated_summary
-
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(_evaluate())
+    return _evaluate()
 
 def save_results(results: List[EvaluationResult], output_path: Path) -> None:
     """
@@ -930,47 +901,6 @@ def save_summary(summary: Dict[str, float], summary_path: Path) -> None:
         return
     with summary_path.open("w", encoding="utf-8") as handle:
         json.dump(summary, handle, ensure_ascii=False, indent=2)
-
-
-@dataclass
-class EvalConfig:
-    """
-    Minimal DeepResearch RACE evaluator configuration
-    """
-
-    target: Optional[Path] = None  # JSONL of model outputs to score (offline mode)
-    queries: Path = Path("data/prompt_data/query.jsonl")
-    reference: Path = Path("data/test_data/cleaned_data/reference.jsonl")
-    criteria: Path = Path("data/criteria_data/criteria.jsonl")
-    language: str = "en"  # Language filter: 'all', 'en', or 'zh'
-    limit: Optional[int] = None  # Optional cap on number of prompts
-    judge_model: str = "gpt-5-nano"  # LLM judge model name
-    temperature: float = 1.0
-    api_key: Optional[str] = (
-        None  # OpenAI API key (falls back to OPENAI_API_KEY env var)
-    )
-    output: Path = Path("race_raw_results.jsonl")
-    summary: Path = Path("race_summary.json")
-    wandb_entity: Optional[str] = "wandb-applied-ai-team"
-    wandb_project: Optional[str] = "london-workshop-2025"
-    evaluation_name: str = "deep_research_race_eval"
-    trials: int = 1
-    weave_attributes: Dict[str, Any] = field(default_factory=dict)
-    max_retries: int = 5
-    retry_backoff: float = 1.5
-    weave_parallelism: Optional[int] = 20
-    mode: EvaluationMode = EvaluationMode.OFFLINE
-    debug: bool = False
-
-    def __post_init__(self):
-        if self.api_key is None:
-            self.api_key = os.environ.get("OPENAI_API_KEY")
-        if self.language not in ["all", "en", "zh"]:
-            raise ValueError(
-                f"Invalid language: {self.language}. Must be 'all', 'en', or 'zh'"
-            )
-        if not isinstance(self.mode, EvaluationMode):
-            self.mode = EvaluationMode(self.mode)
 
 
 def parse_args(argv: Optional[List[str]] = None) -> EvalConfig:
@@ -1031,7 +961,10 @@ def run_weave_evaluation(
     *,
     agent_callable: AgentCallable,
     weave_attributes: Optional[Dict[str, Any]] = None,
-) -> Tuple[List[EvaluationResult], Dict[str, float]]:
+) -> Union[
+    Tuple[List[EvaluationResult], Dict[str, float]],
+    Awaitable[Tuple[List[EvaluationResult], Dict[str, float]]],
+]:
     """
     Convenience wrapper to kick off the weave evaluation programmatically.
     """
@@ -1046,7 +979,10 @@ def evaluate_agent(
     config: EvalConfig,
     *,
     weave_attributes: Optional[Dict[str, Any]] = None,
-) -> Tuple[List[EvaluationResult], Dict[str, float]]:
+) -> Union[
+    Tuple[List[EvaluationResult], Dict[str, float]],
+    Awaitable[Tuple[List[EvaluationResult], Dict[str, float]]],
+]:
     """
     Evaluate a callable (e.g., agent.run) against the configured DeepResearch benchmark.
     """
