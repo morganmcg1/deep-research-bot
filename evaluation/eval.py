@@ -1,225 +1,100 @@
 #!/usr/bin/env python3
-"""Minimal RACE evaluation script extracted from deepresearch_bench_race.py.
+"""RACE evaluation script instrumented with Weave Evaluations.
 
-This script keeps only the pieces needed to:
-  * load task prompts, criteria, reference articles, and model outputs;
-  * call an LLM judge with the official DeepResearch RACE scoring prompt;
-  * parse the judge's JSON response and turn it into normalized scores.
+Evaluation data and method taken from Deep Research Bench: https://github.com/Ayanami0730/deep_research_bench
 
-It inlines the key helper utilities so it can live in an otherwise empty
-repository. Copy the companion JSONL data files described in the README section
-of this script into the same layout (or point the CLI flags at their new
-locations) and provide an OpenAI-compatible API key to run evaluations.
+Two primary entrypoints are now available:
+
+1. CLI (`python evaluation/eval.py --target ...`) behaves like the original
+   DeepResearch script and runs a Weaver evaluation using pre-generated model
+   outputs from disk.
+2. The new `run_weave_evaluation` helper lets callers provide a callable (e.g.,
+   `agent.run`) that will be invoked inside the weaved `Model.predict`, so
+   agent output is generated on-the-fly during evaluation.
+
+The script still loads DeepResearch JSONL assets (queries, references, criteria)
+and continues to write JSONL + summary files for local inspection, but the core
+scoring loop now flows through `weave.Evaluation` so that every run is traced in
+Weights & Biases Weave.
 """
 
 from __future__ import annotations
 
+import asyncio
+import inspect
+import itertools
 import json
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+import warnings
+from dataclasses import dataclass, field, fields
+from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
-
+from typing import (
+    Any,
+    Awaitable,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+)
+from tenacity import retry, stop_after_attempt, wait_exponential
+import weave
+from dotenv import load_dotenv
+from judge_prompts import (
+    SCORE_PROMPT_EN,
+    SCORE_PROMPT_ZH,
+    SYSTEM_PROMPT_EN,
+    SYSTEM_PROMPT_ZH,
+    JudgeOutput,
+)
 from openai import OpenAI
+from pydantic import BaseModel, Field, PrivateAttr
 from simple_parsing import ArgumentParser
 
+warnings.filterwarnings("ignore", message=".*UnsupportedFieldAttributeWarning.*")
+warnings.filterwarnings("ignore", message=".*Hub is deprecated.*")
+warnings.filterwarnings(
+    "ignore", message="The 'warn' method is deprecated, use 'warning' instead"
+)
 
-# ---------------------------------------------------------------------------
-# Prompt templates (English + Chinese) copied from prompt/score_prompt_*.py.
-# ---------------------------------------------------------------------------
+load_dotenv()
 
-SCORE_PROMPT_EN = """
-<system_role>You are a strict, meticulous, and objective research article evaluation expert. You excel at using specific assessment criteria to deeply compare two articles on the same task, providing precise scores and clear justifications.</system_role>
 
-<user_prompt>
-**Task Background**
-There is a deep research task, and you need to evaluate two research articles written for this task. We will assess the articles across four dimensions: Comprehensiveness, Insight, Instruction Following, and Readability. The content is as follows:
-<task>
-"{task_prompt}"
-</task>
-
-**Articles to Evaluate**
-<article_1>
-"{article_1}"
-</article_1>
-
-<article_2>
-"{article_2}"
-</article_2>
-
-**Evaluation Criteria**
-Now, you need to evaluate and compare these two articles based on the following **evaluation criteria list**, providing comparative analysis and scoring each on a scale of 0-10. Each criterion includes an explanation, please understand carefully.
-
-<criteria_list>
-{criteria_list}
-</criteria_list>
-
-<Instruction>
-**Your Task**
-Please strictly evaluate and compare `<article_1>` and `<article_2>` based on **each criterion** in the `<criteria_list>`. You need to:
-1.  **Analyze Each Criterion**: Consider how each article fulfills the requirements of each criterion.
-2.  **Comparative Evaluation**: Analyze how the two articles perform on each criterion, referencing the content and criterion explanation.
-3.  **Score Separately**: Based on your comparative analysis, score each article on each criterion (0-10 points).
-
-**Scoring Rules**
-For each criterion, score both articles on a scale of 0-10 (continuous values). The score should reflect the quality of performance on that criterion:
-*   0-2 points: Very poor performance. Almost completely fails to meet the criterion requirements.
-*   2-4 points: Poor performance. Minimally meets the criterion requirements with significant deficiencies.
-*   4-6 points: Average performance. Basically meets the criterion requirements, neither good nor bad.
-*   6-8 points: Good performance. Largely meets the criterion requirements with notable strengths.
-*   8-10 points: Excellent/outstanding performance. Fully meets or exceeds the criterion requirements.
-
-**Output Format Requirements**
-Please **strictly** follow the `<output_format>` below for each criterion evaluation. **Do not include any other unrelated content, introduction, or summary**. Start with "Standard 1" and proceed sequentially through all criteria:
-</Instruction>
-
-<output_format>
-{
-    "comprehensiveness": [
-        {
-            "criterion": [Text content of the first comprehensiveness evaluation criterion],
-            "analysis": [Comparative analysis],
-            "article_1_score": [Continuous score 0-10],
-            "article_2_score": [Continuous score 0-10]
-        },
-        {
-            "criterion": [Text content of the second comprehensiveness evaluation criterion],
-            "analysis": [Comparative analysis],
-            "article_1_score": [Continuous score 0-10],
-            "article_2_score": [Continuous score 0-10]
-        },
-        ...
-    ],
-    "insight": [
-        {
-            "criterion": [Text content of the first insight evaluation criterion],
-            "analysis": [Comparative analysis],
-            "article_1_score": [Continuous score 0-10],
-            "article_2_score": [Continuous score 0-10]
-        },
-        ...
-    ],
-    ...
-}
-</output_format>
-
-Now, please evaluate the two articles based on the research task and criteria, providing detailed comparative analysis and scores according to the requirements above. Ensure your output follows the specified `<output_format>` and that the JSON format is parsable, with all characters that might cause JSON parsing errors properly escaped.
-</user_prompt>
-"""
-
-SCORE_PROMPT_ZH = """
-<system_role>你是一名严格、细致、客观的调研文章评估专家。你擅长根据具体的评估标准，深入比较两篇针对同一任务的文章，并给出精确的评分和清晰的理由。</system_role>
-
-<user_prompt>
-**任务背景**
-有一个深度调研任务，你需要评估针对该任务撰写的两篇调研文章。我们会从以下四个维度评估文章：全面性、洞察力、指令遵循能力和可读性。内容如下：
-<task>
-"{task_prompt}"
-</task>
-
-**待评估文章**
-<article_1>
-"{article_1}"
-</article_1>
-
-<article_2>
-"{article_2}"
-</article_2>
-
-**评估标准**
-现在，你需要根据以下**评判标准列表**，逐条评估并比较这两篇文章的表现，输出对比分析，然后给出0-10的分数。每个标准都���有其解释，请仔细理解。
-
-<criteria_list>
-{criteria_list}
-</criteria_list>
-
-<Instruction>
-**你的任务**
-请严格按照 `<criteria_list>` 中的**每一条标准**，对比评估 `<article_1>` 和 `<article_2>` 在该标准上的具体表现。你需要：
-1.  **逐条分析**：针对列表中的每一条标准，分别思考两篇文章是如何满足该标准要求的。
-2.  **对比评估**：结合文章内容与标准解释，对比分析两篇文章在每一条标准上的表现。
-3.  **分别打分**：基于你的对比分析，为两篇文章在该条标准上的表现分别打分（0-10分）。
-
-**打分规则**
-对每一条标准，分别为两篇文章打分，打分范围为 0-10 分（连续的数值）。分数高低应体现文章在该标准上表现的好坏：
-*   0-2分：表现很差。几乎完全不符合标准要求。
-*   2-4分：表现较差。少量符合标准要求，但有明显不足。
-*   4-6分：表现中等。基本符合标准要求，不好不坏。
-*   6-8分：表现较好。大部分符合标准要求，有可取之处。
-*   8-10分：表现出色/极好。完全或超预期符合标准要求。
-
-**输出格式要求**
-请**严格**按照下列`<output_format>`格式输出每一条标准的评估结果，**不要包含任何其他无关内容、引言或总结**。从"标准1"开始，按顺序输出所有标准的评估：
-</Instruction>
-
-<output_format>
-{
-    "comprehensiveness": [
-        {
-            "criterion": [全面性维度的第一条评判标准文本内容],
-            "analysis": [对比分析],
-            "article_1_score": [0-10连续分数],
-            "article_2_score": [0-10连续分数]
-        },
-        {
-            "criterion": [全面性维度的第二条评判标准文本内容],
-            "analysis": [对比分析],
-            "article_1_score": [0-10连续分数],
-            "article_2_score": [0-10连续分数]
-        },
-        ...
-    ],
-    "insight": [
-        {
-            "criterion": [洞察力维度的第一条评判标准文本内容],
-            "analysis": [对比分析],
-            "article_1_score": [0-10连续分数],
-            "article_2_score": [0-10连续分数]
-        },
-        ...
-    ],
-    ...
-}
-</output_format>
-
-现在，请根据调研任务和标准，对两篇文章进行评估，并按照上述要求给出详细的对比分析和评分，请确保输出格式遵守上述`<output_format>`，而且保证其中的json格式可以解析，注意所有可能导致json解析错误的要转义的符号。
-</user_prompt>
-"""
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Simple dataclass containers.
+# Pydantic models.
 # ---------------------------------------------------------------------------
 
 
-@dataclass(frozen=True)
-class TaskRecord:
-    '''
-    Data class for task records.
-    '''
+class TaskRecord(BaseModel):
+    """Task record"""
+
+    model_config = {"frozen": True}
     id: Any
     prompt: str
-    language: str
+    language: str = "en"
 
 
-@dataclass(frozen=True)
-class ArticleRecord:
-    '''
-    Data class for article records.
-    '''
+class ArticleRecord(BaseModel):
+    """Article record"""
+
+    model_config = {"frozen": True}
     id: Any
     prompt: str
     article: str
 
 
-@dataclass
-class EvaluationResult:
-    '''
-    Data class for evaluation results.
-    '''
+class EvaluationResult(BaseModel):
+    """Evaluation result"""
+
     id: Any
     prompt: str
     comprehensiveness: float
@@ -227,7 +102,73 @@ class EvaluationResult:
     instruction_following: float
     readability: float
     overall_score: float
-    raw_judge: Dict[str, Any]
+    raw_judge: JudgeOutput
+
+
+class EvaluationMode(str, Enum):
+    """Evaluation execution modes."""
+
+    ONLINE = "online"
+    OFFLINE = "offline"
+
+
+AgentCallableReturn = Union[str, Dict[str, Any]]
+AgentCallable = Callable[
+    [str], Union[AgentCallableReturn, Awaitable[AgentCallableReturn]]
+]
+
+
+def _ensure_text_response(response: AgentCallableReturn) -> str:
+    """
+    Normalize agent callable responses into text, the response can be a string, a dictionary, a BaseModel, or a JSON string.
+    """
+    if isinstance(response, str):
+        return response
+    if isinstance(response, dict):
+        for key in (
+            "article",
+            "answer",
+            "generated_text",
+            "output",
+            "response",
+            "text",
+        ):
+            value = response.get(key)
+            if isinstance(value, str):
+                return value
+    if isinstance(response, BaseModel):
+        return response.model_dump_json(exclude_none=True)
+    return json.dumps(response, ensure_ascii=False)
+
+
+async def _invoke_agent_callable(
+    agent_callable: AgentCallable, prompt: str
+) -> Optional[str]:
+    """
+    Call agent callable (sync or async) and return normalized text.
+    """
+    result = agent_callable(prompt)
+    if inspect.isawaitable(result):
+        result = await result  # type: ignore[assignment]
+    if result is None:
+        return None
+    return _ensure_text_response(result)
+
+
+def _config_to_metadata(config: "EvalConfig") -> Dict[str, Any]:
+    """
+    Convert EvalConfig dataclass into a JSON-friendly metadata dict.
+    """
+    metadata: Dict[str, Any] = {}
+    for config_field in fields(config):
+        value = getattr(config, config_field.name)
+        if isinstance(value, Path):
+            metadata[config_field.name] = str(value)
+        elif isinstance(value, dict):
+            metadata[config_field.name] = value.copy()
+        else:
+            metadata[config_field.name] = value
+    return metadata
 
 
 # ---------------------------------------------------------------------------
@@ -236,9 +177,9 @@ class EvaluationResult:
 
 
 def load_jsonl(path: Path) -> List[Dict[str, Any]]:
-    '''
+    """
     Load JSONL file.
-    '''
+    """
     data: List[Dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
@@ -250,9 +191,9 @@ def load_jsonl(path: Path) -> List[Dict[str, Any]]:
 
 
 def format_criteria_list(criteria_data: Dict[str, Any]) -> str:
-    '''
+    """
     Format evaluation criteria list as JSON string, omitting weights.
-    '''
+    """
     criteria_for_prompt: Dict[str, List[Dict[str, str]]] = {}
 
     for dim, criterions in criteria_data.get("criterions", {}).items():
@@ -274,64 +215,13 @@ def format_criteria_list(criteria_data: Dict[str, Any]) -> str:
     return json.dumps(criteria_for_prompt, ensure_ascii=False, indent=2)
 
 
-def extract_json_from_markdown(text: str) -> Optional[str]:
-    '''
-    Extract JSON from plain responses or fenced blocks
-    '''
-    if not isinstance(text, str):
-        return None
-
-    stripped = text.strip()
-    if stripped.startswith("{") and stripped.endswith("}"):
-        try:
-            json.loads(stripped)
-            return stripped
-        except json.JSONDecodeError:
-            pass
-
-    if "```json" in text:
-        start = text.find("```json") + len("```json")
-        end = text.find("```", start)
-        if end > start:
-            candidate = text[start:end].strip()
-            try:
-                json.loads(candidate)
-                return candidate
-            except json.JSONDecodeError:
-                pass
-
-    if "```" in text:
-        start = text.find("```") + len("```")
-        end = text.find("```", start)
-        if end > start:
-            candidate = text[start:end].strip()
-            try:
-                json.loads(candidate)
-                return candidate
-            except json.JSONDecodeError:
-                pass
-
-    # Fallback: match from first to last brace.
-    start = stripped.find("{")
-    end = stripped.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        candidate = stripped[start : end + 1]
-        try:
-            json.loads(candidate)
-            return candidate
-        except json.JSONDecodeError:
-            pass
-
-    return None
-
-
 def calculate_weighted_scores(
-    llm_output_json: Dict[str, List[Dict[str, Any]]],
+    judge_output: JudgeOutput,
     criteria_data: Dict[str, Any],
 ) -> Dict[str, Any]:
-    '''
+    """
     Weighted scoring
-    '''
+    """
     results = {
         "target": {"dims": {}, "total": 0.0},
         "reference": {"dims": {}, "total": 0.0},
@@ -347,46 +237,42 @@ def calculate_weighted_scores(
     total_target = 0.0
     total_reference = 0.0
 
-    for dim, scores_list in llm_output_json.items():
-        if not isinstance(scores_list, list):
-            logging.warning("Dimension %s is not a list in judge output", dim)
+    for dim_name in [
+        "comprehensiveness",
+        "insight",
+        "instruction_following",
+        "readability",
+    ]:
+        scores_list = getattr(judge_output, dim_name)
+
+        if dim_name not in dimension_weights or dim_name not in criterion_weights:
+            logging.warning("Skipping dimension %s due to missing weights", dim_name)
             continue
 
-        if dim not in dimension_weights or dim not in criterion_weights:
-            logging.warning("Skipping dimension %s due to missing weights", dim)
-            continue
-
-        dim_weights = criterion_weights[dim]
+        dim_weights = criterion_weights[dim_name]
         dim_target_sum = 0.0
         dim_reference_sum = 0.0
         dim_total_weight = 0.0
 
         for entry in scores_list:
-            if not isinstance(entry, dict):
-                continue
-            criterion_text = entry.get("criterion")
-            art1 = entry.get("article_1_score", entry.get("target_score"))
-            art2 = entry.get("article_2_score")
-
-            if criterion_text is None or art1 is None:
-                continue
+            criterion_text = entry.criterion
+            art1_val = entry.article_1_score
+            art2_val = entry.article_2_score
 
             weight = dim_weights.get(criterion_text)
 
             if weight is None:
                 lowered = criterion_text.lower()
                 for key, value in dim_weights.items():
-                    if key.lower() == lowered or lowered in key.lower() or key.lower() in lowered:
+                    if (
+                        key.lower() == lowered
+                        or lowered in key.lower()
+                        or key.lower() in lowered
+                    ):
                         weight = value
                         break
             if weight is None:
                 weight = sum(dim_weights.values()) / max(len(dim_weights), 1)
-
-            try:
-                art1_val = float(art1)
-                art2_val = float(art2) if art2 is not None else 0.0
-            except (TypeError, ValueError):
-                continue
 
             dim_target_sum += art1_val * weight
             dim_reference_sum += art2_val * weight
@@ -398,10 +284,10 @@ def calculate_weighted_scores(
         dim_target_avg = dim_target_sum / dim_total_weight
         dim_reference_avg = dim_reference_sum / dim_total_weight
 
-        results["target"]["dims"][f"{dim}_weighted_avg"] = dim_target_avg
-        results["reference"]["dims"][f"{dim}_weighted_avg"] = dim_reference_avg
+        results["target"]["dims"][f"{dim_name}_weighted_avg"] = dim_target_avg
+        results["reference"]["dims"][f"{dim_name}_weighted_avg"] = dim_reference_avg
 
-        dim_weight = dimension_weights.get(dim, 0.0)
+        dim_weight = dimension_weights.get(dim_name, 0.0)
         total_target += dim_target_avg * dim_weight
         total_reference += dim_reference_avg * dim_weight
 
@@ -422,46 +308,215 @@ def build_judge_prompt(
     article_2: str,
     criteria_list: str,
 ) -> str:
-    '''
+    """
     Build judge prompt
-    '''
+    """
+    system_prompt = SYSTEM_PROMPT_ZH if language == "zh" else SYSTEM_PROMPT_EN
     template = SCORE_PROMPT_ZH if language == "zh" else SCORE_PROMPT_EN
-    return template.format(
-        task_prompt=task_prompt,
-        article_1=article_1,
-        article_2=article_2,
-        criteria_list=criteria_list,
-    )
+    # The prompt templates include large JSON snippets with braces, so using
+    # ``str.format`` would mistakenly treat those as placeholders. Perform
+    # narrow replacements instead so only the intended tokens are swapped.
+    replacements = {
+        "{task_prompt}": task_prompt,
+        "{article_1}": article_1,
+        "{article_2}": article_2,
+        "{criteria_list}": criteria_list,
+    }
 
+    for placeholder, value in replacements.items():
+        template = template.replace(placeholder, value)
 
+    return system_prompt, template
+
+@weave.op
+@retry(
+    stop=stop_after_attempt(5),
+    wait=wait_exponential(multiplier=1, min=4, max=15),
+)
 def call_judge(
     client: OpenAI,
     prompt: str,
+    system_prompt: str,
     model: str,
-    max_retries: int = 5,
-    backoff: float = 1.5,
-) -> Dict[str, Any]:
-    '''
-    Call the LLM judge and return parsed JSON.
-    '''
+    temperature: float = 1.0,
+) -> JudgeOutput:
+    """
+    Call the LLM judge and return parsed Pydantic model.
+    """
 
-    for attempt in range(max_retries):
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
+    response = client.chat.completions.create(
+        model=model,
+        temperature=temperature,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        response_format=JudgeOutput,
+    )
+    raw_json = response.choices[0].message.content
+    return JudgeOutput.model_validate_json(raw_json)
+
+
+# ---------------------------------------------------------------------------
+# Weave model and scorers.
+# ---------------------------------------------------------------------------
+
+
+class DeepResearchWeaveModel(weave.Model):
+    """
+    Weave model that can either call an agent or consume precomputed answers.
+    """
+
+    judge_model: str = "gpt-5-nano"
+    temperature: float = 1.0
+    agent_callable: Optional[AgentCallable] = None
+    api_key: Optional[str] = None
+    max_retries: int = 5
+    backoff: float = 1.5
+    _outputs: List[Dict[str, Any]] = PrivateAttr(default_factory=list)
+    _outputs_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
+
+    @weave.op()
+    async def predict(
+        self,
+        prompt: str,
+        language: str = "en",
+        criteria: Dict[str, Any] = None,
+        reference_article: str = "",
+        target_article: Optional[str] = None,
+        row_index: int = 0,
+        row_id: Any = None,
+        trial_index: int = 0,
+    ) -> Dict[str, Any]:
+        """
+        Run the agent, judge with OpenAI, and compute normalized scores.
+        """
+        candidate_article: Optional[str] = None
+        if self.agent_callable is not None:
+            candidate_article = await _invoke_agent_callable(
+                self.agent_callable, prompt
             )
-            raw_text = response.choices[0].message.content or ""
-            json_blob = extract_json_from_markdown(raw_text)
-            if not json_blob:
-                raise ValueError("Judge response did not contain JSON")
-            return json.loads(json_blob)
-        except Exception as exc:  # noqa: BLE001
-            if attempt == max_retries - 1:
-                raise
-            sleep_for = backoff ** attempt
-            logging.warning("Judge call failed (%s); retrying in %.1fs", exc, sleep_for)
-            time.sleep(sleep_for)
+        if candidate_article is None:
+            if target_article is None:
+                raise ValueError(
+                    "No agent callable or target article provided for evaluation."
+                )
+            candidate_article = target_article
+
+
+        result = {
+            "row_index": row_index,
+            "trial_index": trial_index,
+            "id": row_id,
+            "prompt": prompt,
+            "language": language,
+            "candidate_article": candidate_article,
+            "reference_article": reference_article,
+        }
+
+        async with self._outputs_lock:
+            self._outputs.append(result)
+
+        return result
+
+    def consume_outputs(self) -> List[Dict[str, Any]]:
+        """
+        Return and clear latest model outputs collected during evaluation.
+        """
+        outputs: List[Dict[str, Any]]
+        if self._outputs:
+            outputs = []
+            for item in self._outputs:
+                output_copy = dict(item)
+                weighted = output_copy.get("weighted_scores")
+                if isinstance(weighted, dict):
+                    output_copy["normalized_scores"] = compute_normalized_scores(
+                        weighted
+                    )
+                outputs.append(output_copy)
+            self._outputs.clear()
+            return outputs
+        return []
+
+    def reset_outputs(self) -> None:
+        """
+        Clear any stored outputs prior to running an evaluation.
+        """
+        if self._outputs:
+            self._outputs.clear()
+
+
+class DeepResearchScorer(weave.Scorer):
+    """
+    Scorer that surfaces normalized DeepResearch metrics.
+    """
+
+    name: str = "deep_research_scores"
+    judge_model: str = "gpt-5-nano"
+    system_prompt: str = ""
+    judge_prompt: str = ""
+    temperature: float = 1.0
+    api_key: str = ""
+    criteria: Dict[str, Any] = {}
+
+    def _call_judge_sync(self, system_prompt: str, judge_prompt: str) -> JudgeOutput:
+        client = OpenAI(api_key=self.api_key)
+        return call_judge(
+            client=client,
+            system_prompt=system_prompt,
+            prompt=judge_prompt,
+            model=self.judge_model,
+            temperature=self.temperature,
+        )
+
+    @weave.op()
+    def score(self, *, output: Dict[str, Any], **_: Any) -> Dict[str, Any]:
+        '''
+        Score the output using the judge model.
+        '''
+        criteria_list_str = format_criteria_list(self.criteria)
+
+        system_prompt, judge_prompt = build_judge_prompt(
+            language=output["language"],
+            task_prompt=output["prompt"],
+            article_1=output["candidate_article"],
+            article_2=output["reference_article"],
+            criteria_list=criteria_list_str,
+        )
+
+        judge_output = self._call_judge_sync(system_prompt, judge_prompt)
+        weighted_scores = calculate_weighted_scores(judge_output, self.criteria)
+
+        normalized_scores = compute_normalized_scores(
+            weighted_scores if isinstance(weighted_scores, dict) else {}
+        )
+        return {
+            "normalized_scores": normalized_scores,
+            "comprehensiveness": float(normalized_scores.get("comprehensiveness", 0.0)),
+            "insight": float(normalized_scores.get("insight", 0.0)),
+            "instruction_following": float(
+                normalized_scores.get("instruction_following", 0.0)
+            ),
+            "readability": float(normalized_scores.get("readability", 0.0)),
+            "overall": float(normalized_scores.get("overall", 0.0)),
+        }
+
+    @weave.op()
+    def summarize(self, score_rows: List[Dict[str, float]]) -> Dict[str, float]:
+        if not score_rows:
+            return {}
+        totals = {
+            "comprehensiveness": 0.0,
+            "insight": 0.0,
+            "instruction_following": 0.0,
+            "readability": 0.0,
+            "overall": 0.0,
+        }
+        for row in score_rows:
+            for key in totals:
+                totals[key] += float(row.get(key, 0.0))
+        count = max(len(score_rows), 1)
+        return {key: value / count for key, value in totals.items()}
 
 
 # ---------------------------------------------------------------------------
@@ -470,105 +525,99 @@ def call_judge(
 
 
 def normalize_dimension(target: float, reference: float) -> float:
-    '''
+    """
     Normalize dimension
-    '''
+    """
     denom = target + reference
     if denom <= 0:
         return 0.0
     return target / denom
 
 
-def evaluate_single_prompt(
-    client: OpenAI,
-    model_name: str,
-    task: TaskRecord,
-    target_article: ArticleRecord,
-    reference_article: ArticleRecord,
-    criteria: Dict[str, Any],
-) -> EvaluationResult:
-    '''
-    Evaluate single prompt
-    '''
-    criteria_list_str = format_criteria_list(criteria)
-    judge_prompt = build_judge_prompt(
-        language=task.language,
-        task_prompt=task.prompt,
-        article_1=target_article.article,
-        article_2=reference_article.article,
-        criteria_list=criteria_list_str,
-    )
+def compute_normalized_scores(weighted_scores: Dict[str, Any]) -> Dict[str, float]:
+    """
+    Compute normalized scores for target vs reference dimensions.
+    """
+    target_block = weighted_scores.get("target", {})
+    reference_block = weighted_scores.get("reference", {})
+    dims = target_block.get("dims", {}) or {}
+    dims_ref = reference_block.get("dims", {}) or {}
 
-    judge_output = call_judge(client, judge_prompt, model=model_name)
-    scores = calculate_weighted_scores(judge_output, criteria)
-
-    dims = scores["target"]["dims"]
-    dims_ref = scores["reference"]["dims"]
-
-    comprehensiveness = normalize_dimension(
-        dims.get("comprehensiveness_weighted_avg", 0.0),
-        dims_ref.get("comprehensiveness_weighted_avg", 0.0),
+    normalized = {
+        "comprehensiveness": normalize_dimension(
+            float(dims.get("comprehensiveness_weighted_avg", 0.0)),
+            float(dims_ref.get("comprehensiveness_weighted_avg", 0.0)),
+        ),
+        "insight": normalize_dimension(
+            float(dims.get("insight_weighted_avg", 0.0)),
+            float(dims_ref.get("insight_weighted_avg", 0.0)),
+        ),
+        "instruction_following": normalize_dimension(
+            float(dims.get("instruction_following_weighted_avg", 0.0)),
+            float(dims_ref.get("instruction_following_weighted_avg", 0.0)),
+        ),
+        "readability": normalize_dimension(
+            float(dims.get("readability_weighted_avg", 0.0)),
+            float(dims_ref.get("readability_weighted_avg", 0.0)),
+        ),
+    }
+    normalized["overall"] = normalize_dimension(
+        float(target_block.get("total", 0.0)),
+        float(reference_block.get("total", 0.0)),
     )
-    insight = normalize_dimension(
-        dims.get("insight_weighted_avg", 0.0),
-        dims_ref.get("insight_weighted_avg", 0.0),
-    )
-    instruction_following = normalize_dimension(
-        dims.get("instruction_following_weighted_avg", 0.0),
-        dims_ref.get("instruction_following_weighted_avg", 0.0),
-    )
-    readability = normalize_dimension(
-        dims.get("readability_weighted_avg", 0.0),
-        dims_ref.get("readability_weighted_avg", 0.0),
-    )
-
-    overall = normalize_dimension(scores["target"]["total"], scores["reference"]["total"])
-
-    return EvaluationResult(
-        id=task.id,
-        prompt=task.prompt,
-        comprehensiveness=comprehensiveness,
-        insight=insight,
-        instruction_following=instruction_following,
-        readability=readability,
-        overall_score=overall,
-        raw_judge=judge_output,
-    )
+    return normalized
 
 
 def build_maps(
     items: Iterable[Dict[str, Any]],
-    record_cls,
+    record_cls: type[BaseModel],
     required_fields: Tuple[str, ...],
 ) -> Dict[str, Any]:
-    '''
+    """
     Build maps
-    '''
+    """
     mapping: Dict[str, Any] = {}
     for row in items:
         if not all(field in row for field in required_fields):
             continue
-        mapping[row["prompt"]] = record_cls(**{field: row[field] for field in required_fields})
+        mapping[row["prompt"]] = record_cls.model_validate(
+            {field: row[field] for field in required_fields}
+        )
     return mapping
 
 
 def load_inputs(
     queries_path: Path,
-    target_path: Path,
     reference_path: Path,
     criteria_path: Path,
-) -> Tuple[List[TaskRecord], Dict[str, ArticleRecord], Dict[str, ArticleRecord], Dict[str, Dict[str, Any]]]:
-    '''
+    *,
+    target_path: Optional[Path] = None,
+) -> Tuple[
+    List[TaskRecord],
+    Dict[str, ArticleRecord],
+    Dict[str, ArticleRecord],
+    Dict[str, Dict[str, Any]],
+]:
+    """
     Load inputs
-    '''
+    """
     tasks = [
-        TaskRecord(id=row.get("id"), prompt=row["prompt"], language=row.get("language", "en"))
+        TaskRecord.model_validate(
+            {
+                "id": row.get("id"),
+                "prompt": row["prompt"],
+                "language": row.get("language", "en"),
+            }
+        )
         for row in load_jsonl(queries_path)
         if "prompt" in row
     ]
 
-    target_map = build_maps(load_jsonl(target_path), ArticleRecord, ("id", "prompt", "article"))
-    reference_map = build_maps(load_jsonl(reference_path), ArticleRecord, ("id", "prompt", "article"))
+    target_items = load_jsonl(target_path) if target_path is not None else []
+    target_map = build_maps(target_items, ArticleRecord, ("id", "prompt", "article"))
+    reference_map = build_maps(
+        load_jsonl(reference_path), ArticleRecord, ("id", "prompt", "article")
+    )
     criteria_map: Dict[str, Dict[str, Any]] = {
         row["prompt"]: row for row in load_jsonl(criteria_path) if "prompt" in row
     }
@@ -583,15 +632,19 @@ def filter_tasks(
     criteria_map: Dict[str, Dict[str, Any]],
     language: Optional[str],
     limit: Optional[int],
+    *,
+    require_target: bool,
 ) -> List[TaskRecord]:
-    '''
+    """
     Filter tasks
-    '''
+    """
     filtered = []
     for task in tasks:
         if language and task.language != language:
             continue
-        if task.prompt not in target_map or task.prompt not in reference_map or task.prompt not in criteria_map:
+        if require_target and task.prompt not in target_map:
+            continue
+        if task.prompt not in reference_map or task.prompt not in criteria_map:
             continue
         filtered.append(task)
         if limit and len(filtered) >= limit:
@@ -599,10 +652,108 @@ def filter_tasks(
     return filtered
 
 
+def build_evaluation_dataset(
+    tasks: List[TaskRecord],
+    target_map: Dict[str, ArticleRecord],
+    reference_map: Dict[str, ArticleRecord],
+    criteria_map: Dict[str, Dict[str, Any]],
+    *,
+    require_target: bool,
+) -> List[Dict[str, Any]]:
+    """
+    Construct dataset rows passed into weave.Evaluation.
+    """
+    dataset_rows: List[Dict[str, Any]] = []
+    for index, task in enumerate(tasks):
+        target_entry = target_map.get(task.prompt)
+        reference_entry = reference_map.get(task.prompt)
+        criteria_entry = criteria_map.get(task.prompt)
+        if reference_entry is None or criteria_entry is None:
+            logger.warning(
+                "Skipping prompt without reference/criteria: %s", task.prompt
+            )
+            continue
+        if require_target and target_entry is None:
+            logger.warning(
+                "Skipping prompt without precomputed answer in offline mode: %s",
+                task.prompt,
+            )
+            continue
+        dataset_rows.append(
+            {
+                "row_index": index,
+                "row_id": task.id if task.id is not None else index,
+                "prompt": task.prompt,
+                "language": task.language,
+                "target_article": target_entry.article if target_entry else None,
+                "reference_article": reference_entry.article,
+                "criteria": criteria_entry,
+                "trial_index": 0,
+            }
+        )
+    return dataset_rows
+
+
+def expand_dataset_trials(
+    dataset_rows: List[Dict[str, Any]], trials: int
+) -> List[Dict[str, Any]]:
+    """
+    Expand dataset rows to account for requested number of trials.
+    """
+    if trials <= 1:
+        return dataset_rows
+    expanded: List[Dict[str, Any]] = []
+    for row in dataset_rows:
+        base_index = row["row_index"]
+        for trial in range(trials):
+            duplicated = row.copy()
+            duplicated["trial_index"] = trial
+            duplicated["row_index"] = base_index * trials + trial
+            expanded.append(duplicated)
+    return expanded
+
+
+def outputs_to_evaluation_results(
+    outputs: Sequence[Dict[str, Any]],
+    dataset_rows: Sequence[Dict[str, Any]],
+) -> List[EvaluationResult]:
+    """
+    Convert weave model outputs into EvaluationResult records, preserving dataset order.
+    """
+    rows_by_index = {row["row_index"]: row for row in dataset_rows}
+    results: List[EvaluationResult] = []
+    for output in sorted(
+        outputs,
+        key=lambda item: (item.get("row_index", 0), item.get("trial_index", 0)),
+    ):
+        dataset_row = rows_by_index.get(output.get("row_index"))
+        if dataset_row is None:
+            continue
+        normalized = output.get("normalized_scores")
+        if not isinstance(normalized, dict):
+            normalized = compute_normalized_scores(output.get("weighted_scores", {}))
+        judge_output_dict = output.get("judge_output", {})
+        results.append(
+            EvaluationResult(
+                id=dataset_row["row_id"],
+                prompt=dataset_row["prompt"],
+                comprehensiveness=float(normalized.get("comprehensiveness", 0.0)),
+                insight=float(normalized.get("insight", 0.0)),
+                instruction_following=float(
+                    normalized.get("instruction_following", 0.0)
+                ),
+                readability=float(normalized.get("readability", 0.0)),
+                overall_score=float(normalized.get("overall", 0.0)),
+                raw_judge=JudgeOutput.model_validate(judge_output_dict),
+            )
+        )
+    return results
+
+
 def aggregate_results(results: List[EvaluationResult]) -> Dict[str, float]:
-    '''
+    """
     Aggregate results
-    '''
+    """
     if not results:
         return {}
 
@@ -618,15 +769,74 @@ def aggregate_results(results: List[EvaluationResult]) -> Dict[str, float]:
     }
 
 
-def run_evaluation(args: "EvalConfig") -> List[EvaluationResult]:
-    '''
-    Run evaluation
-    '''
+def _resolve_wandb_project(config: "EvalConfig") -> Optional[str]:
+    if config.wandb_project:
+        return config.wandb_project
+    if config.wandb_entity and config.wandb_project:
+        return f"{config.wandb_entity}/{config.wandb_project}"
+    return None
+
+
+def _prepare_weave_attributes(
+    config: "EvalConfig", extra: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    attributes = dict(config.weave_attributes or {})
+    if extra:
+        attributes.update(extra)
+    attributes.setdefault("evaluation_name", config.evaluation_name)
+    attributes.setdefault("judge_model", config.judge_model)
+    attributes.setdefault("trials", config.trials)
+    attributes.setdefault("evaluation_config", _config_to_metadata(config))
+    return attributes
+
+
+def run_evaluation(
+    args: "EvalConfig",
+    agent_callable: Optional[AgentCallable] = None,
+    weave_attributes: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[EvaluationResult], Dict[str, float]]:
+    """
+    Run evaluation through weave.Evaluation across online or offline modes.
+    """
+    if not args.api_key:
+        raise ValueError("Provide an OpenAI API key via --api-key or OPENAI_API_KEY")
+
+    if args.debug:
+        args.limit = 2
+        args.trials = 1
+        args.weave_parallelism = 1
+        args.evaluation_name = args.evaluation_name + "_debug"
+        args.max_retries = 1
+
+    mode_value = args.mode
+    mode = (
+        mode_value
+        if isinstance(mode_value, EvaluationMode)
+        else EvaluationMode(mode_value)
+    )
+
+    if mode is EvaluationMode.OFFLINE and agent_callable is not None:
+        logging.info("agent_callable provided; switching evaluation mode to online")
+        mode = EvaluationMode.ONLINE
+    if mode is EvaluationMode.ONLINE and agent_callable is None:
+        raise ValueError(
+            "Online evaluation requires an agent_callable to generate answers."
+        )
+    if mode is EvaluationMode.OFFLINE and args.target is None:
+        raise ValueError(
+            "Offline evaluation requires a --target JSONL file of precomputed answers."
+        )
+    args.mode = mode
+
     tasks, target_map, reference_map, criteria_map = load_inputs(
-        args.queries, args.target, args.reference, args.criteria
+        args.queries,
+        args.reference,
+        args.criteria,
+        target_path=args.target,
     )
 
     target_language = None if args.language == "all" else args.language
+    require_target = mode is EvaluationMode.OFFLINE
     tasks_to_run = filter_tasks(
         tasks,
         target_map,
@@ -634,63 +844,88 @@ def run_evaluation(args: "EvalConfig") -> List[EvaluationResult]:
         criteria_map,
         language=target_language,
         limit=args.limit,
+        require_target=require_target,
     )
 
     if not tasks_to_run:
         logging.warning("No tasks matched the provided filters")
-        return []
+        return [], {}
 
-    client = OpenAI(api_key=args.api_key)
+    dataset_rows = build_evaluation_dataset(
+        tasks_to_run,
+        target_map,
+        reference_map,
+        criteria_map,
+        require_target=require_target,
+    )
+    dataset_rows = expand_dataset_trials(dataset_rows, args.trials)
 
-    results: List[EvaluationResult] = []
-    with ThreadPoolExecutor(max_workers=args.max_workers) as executor:
-        futures = {
-            executor.submit(
-                evaluate_single_prompt,
-                client,
-                args.judge_model,
-                task,
-                target_map[task.prompt],
-                reference_map[task.prompt],
-                criteria_map[task.prompt],
-            ): task
-            for task in tasks_to_run
-        }
+    if not dataset_rows:
+        logging.warning("No dataset rows constructed for evaluation")
+        return [], {}
 
-        for future in as_completed(futures):
-            task = futures[future]
-            try:
-                results.append(future.result())
-            except Exception as exc:  # noqa: BLE001
-                logging.error("Task %s failed: %s", task.id, exc)
+    if args.weave_parallelism is not None:
+        os.environ["WEAVE_PARALLELISM"] = str(args.weave_parallelism)
 
+    init_project = _resolve_wandb_project(args)
+    try:
+        if init_project:
+            weave.init(init_project)
+        else:
+            weave.init()
+    except Exception as exc:  # noqa: BLE001
+        logging.warning(
+            "Failed to initialize weave project (%s), continuing locally.", exc
+        )
+
+    attributes = _prepare_weave_attributes(args, weave_attributes)
+
+    async def _run_async() -> Sequence[Dict[str, Any]]:
+        evaluation = weave.Evaluation(
+            name=args.evaluation_name,
+            dataset=dataset_rows,
+            scorers=[DeepResearchScorer()],
+            trials=1,
+        )
+
+        model = DeepResearchWeaveModel(
+            judge_model=args.judge_model,
+            temperature=args.temperature,
+            agent_callable=agent_callable,
+            api_key=args.api_key,
+            max_retries=args.max_retries,
+            backoff=args.retry_backoff,
+        )
+        model.reset_outputs()
+
+        with weave.attributes(attributes):
+            await evaluation.evaluate(
+                model, __weave={"display_name": args.evaluation_name}
+            )  # pylint: disable=not-callable
+
+        outputs = model.consume_outputs()
+        return outputs
+
+    outputs = asyncio.run(_run_async())
+    results = outputs_to_evaluation_results(outputs, dataset_rows)
     results.sort(key=lambda res: res.id if res.id is not None else 1e9)
-    return results
+    aggregated_summary = aggregate_results(results)
+    return results, aggregated_summary
 
 
 def save_results(results: List[EvaluationResult], output_path: Path) -> None:
-    '''
+    """
     Save results
-    '''
+    """
     with output_path.open("w", encoding="utf-8") as handle:
         for item in results:
-            line = {
-                "id": item.id,
-                "prompt": item.prompt,
-                "comprehensiveness": item.comprehensiveness,
-                "insight": item.insight,
-                "instruction_following": item.instruction_following,
-                "readability": item.readability,
-                "overall_score": item.overall_score,
-                "judge_output": item.raw_judge,
-            }
-            handle.write(json.dumps(line, ensure_ascii=False) + "\n")
+            handle.write(item.model_dump_json(exclude_none=True) + "\n")
 
 
 def save_summary(summary: Dict[str, float], summary_path: Path) -> None:
-    '''
+    """
     Save summary
-    '''
+    """
     if not summary:
         return
     with summary_path.open("w", encoding="utf-8") as handle:
@@ -699,35 +934,49 @@ def save_summary(summary: Dict[str, float], summary_path: Path) -> None:
 
 @dataclass
 class EvalConfig:
-    '''
+    """
     Minimal DeepResearch RACE evaluator configuration
-    '''
+    """
 
-    target: Path  # JSONL of model outputs to score
+    target: Optional[Path] = None  # JSONL of model outputs to score (offline mode)
     queries: Path = Path("data/prompt_data/query.jsonl")
     reference: Path = Path("data/test_data/cleaned_data/reference.jsonl")
     criteria: Path = Path("data/criteria_data/criteria.jsonl")
-    language: str = "all"  # Language filter: 'all', 'en', or 'zh'
+    language: str = "en"  # Language filter: 'all', 'en', or 'zh'
     limit: Optional[int] = None  # Optional cap on number of prompts
-    max_workers: int = 4
-    judge_model: str = "gpt-4.1-2025-04-14"  # LLM judge model name
-    api_key: Optional[str] = None  # OpenAI API key (falls back to OPENAI_API_KEY env var)
+    judge_model: str = "gpt-5-nano"  # LLM judge model name
+    temperature: float = 1.0
+    api_key: Optional[str] = (
+        None  # OpenAI API key (falls back to OPENAI_API_KEY env var)
+    )
     output: Path = Path("race_raw_results.jsonl")
     summary: Path = Path("race_summary.json")
+    wandb_entity: Optional[str] = "wandb-applied-ai-team"
+    wandb_project: Optional[str] = "london-workshop-2025"
+    evaluation_name: str = "deep_research_race_eval"
+    trials: int = 1
+    weave_attributes: Dict[str, Any] = field(default_factory=dict)
+    max_retries: int = 5
+    retry_backoff: float = 1.5
+    weave_parallelism: Optional[int] = 20
+    mode: EvaluationMode = EvaluationMode.OFFLINE
+    debug: bool = False
 
     def __post_init__(self):
         if self.api_key is None:
             self.api_key = os.environ.get("OPENAI_API_KEY")
-        if not self.api_key:
-            raise ValueError("Provide an OpenAI API key via --api-key or OPENAI_API_KEY")
         if self.language not in ["all", "en", "zh"]:
-            raise ValueError(f"Invalid language: {self.language}. Must be 'all', 'en', or 'zh'")
+            raise ValueError(
+                f"Invalid language: {self.language}. Must be 'all', 'en', or 'zh'"
+            )
+        if not isinstance(self.mode, EvaluationMode):
+            self.mode = EvaluationMode(self.mode)
 
 
 def parse_args(argv: Optional[List[str]] = None) -> EvalConfig:
-    '''
+    """
     Parse arguments
-    '''
+    """
     parser = ArgumentParser(description="Minimal DeepResearch RACE evaluator")
     parser.add_arguments(EvalConfig, dest="config")
     args = parser.parse_args(argv)
@@ -735,9 +984,9 @@ def parse_args(argv: Optional[List[str]] = None) -> EvalConfig:
 
 
 def configure_logging() -> None:
-    '''
+    """
     Configure logging
-    '''
+    """
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
@@ -745,14 +994,24 @@ def configure_logging() -> None:
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    '''
+    """
     Main function
-    '''
+    """
     configure_logging()
     args = parse_args(argv)
 
     logging.info("Loading inputs and running evaluation...")
-    results = run_evaluation(args)
+    mode_value = (
+        args.mode
+        if isinstance(args.mode, EvaluationMode)
+        else EvaluationMode(args.mode)
+    )
+    if mode_value is EvaluationMode.ONLINE:
+        raise ValueError(
+            "CLI execution only supports offline mode. Use evaluate_agent for online runs."
+        )
+
+    results, summary = run_evaluation(args)
 
     if not results:
         logging.warning("No evaluations completed")
@@ -762,12 +1021,40 @@ def main(argv: Optional[List[str]] = None) -> None:
     save_results(results, args.output)
 
     logging.info("Computing summary averages...")
-    summary = aggregate_results(results)
     save_summary(summary, args.summary)
 
     logging.info("Summary: %s", summary)
 
 
+def run_weave_evaluation(
+    config: EvalConfig,
+    *,
+    agent_callable: AgentCallable,
+    weave_attributes: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[EvaluationResult], Dict[str, float]]:
+    """
+    Convenience wrapper to kick off the weave evaluation programmatically.
+    """
+    config.mode = EvaluationMode.ONLINE
+    return run_evaluation(
+        config, agent_callable=agent_callable, weave_attributes=weave_attributes
+    )
+
+
+def evaluate_agent(
+    agent_callable: AgentCallable,
+    config: EvalConfig,
+    *,
+    weave_attributes: Optional[Dict[str, Any]] = None,
+) -> Tuple[List[EvaluationResult], Dict[str, float]]:
+    """
+    Evaluate a callable (e.g., agent.run) against the configured DeepResearch benchmark.
+    """
+    config.mode = EvaluationMode.ONLINE
+    return run_weave_evaluation(
+        config, agent_callable=agent_callable, weave_attributes=weave_attributes
+    )
+
+
 if __name__ == "__main__":
     main()
-
