@@ -4,8 +4,11 @@ from exa_py import Exa
 from typing import List, Dict, Any
 import weave
 from weave.flow.util import async_foreach
+from dotenv import load_dotenv
 
 from utils import function_tool
+
+load_dotenv()
 
 
 MODEL_SMALL = "Qwen/Qwen3-235B-A22B-Instruct-2507"
