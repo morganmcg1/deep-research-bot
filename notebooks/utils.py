@@ -137,3 +137,4 @@ def perform_tool_calls(tools: list[Callable], tool_calls: list[ChatCompletionMes
             "content": str(tool_response),
         })
     return messages
+
