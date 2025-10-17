@@ -1,15 +1,31 @@
 [project]
 name = "deep-research-bot"
 version = "0.1.0"
-description = "Add your description here"
+description = "Minimal DeepResearch agent"
 readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.12"
+authors = [{ name = "Deep Research Bot Maintainers" }]
 dependencies = [
     "exa-py>=1.16.1",
     "ipykernel>=7.0.1",
     "jupyterlab>=4.4.9",
     "openai>=2.3.0",
+    "pytest",
+    "pydantic>=2.0",
+    "python-dotenv",
     "rich>=14.2.0",
     "simple-parsing>=0.1.7",
-    "weave>=0.52.9",
+    "weave>=0.52.10",
+]
+
+[tool.pytest.ini_options]
+filterwarnings = [
+    "ignore::pydantic.warnings.PydanticDeprecatedSince211",
+    "ignore:.*Hub is deprecated.*::",
+    "ignore:The 'warn' method is deprecated, use 'warning' instead:DeprecationWarning",
+]
+
+[project.scripts]
+deep-research-eval = "eval:main"
 ]
