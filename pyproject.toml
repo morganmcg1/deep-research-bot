@@ -28,4 +28,4 @@ filterwarnings = [
 
 [project.scripts]
 deep-research-eval = "eval:main"
-]
+
