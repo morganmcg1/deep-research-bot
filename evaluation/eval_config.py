@@ -26,8 +26,9 @@ class EvalConfig:
     criteria: Path = Path("data/criteria_data/criteria.jsonl")
     language: str = "en"  # Language filter: 'all', 'en', or 'zh'
     limit: Optional[int] = None  # Optional cap on number of prompts
-    judge_model: str = "gpt-5-nano"  # LLM judge model name
+    judge_model: str = "gpt-5-nano-2025-08-07"  # LLM judge model name
     temperature: float = 1.0
+    reasoning_effort: str = "low"
     output: Path = Path("race_raw_results.jsonl")
     summary: Path = Path("race_summary.json")
     wandb_entity: Optional[str] = "wandb-applied-ai-team"

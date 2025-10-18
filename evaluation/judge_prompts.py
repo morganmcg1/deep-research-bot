@@ -26,16 +26,20 @@ class JudgeOutput(BaseModel):
 SYSTEM_PROMPT_EN = """<system_role>
 You are a strict, meticulous, and objective research article evaluation expert. You excel at using specific \
 assessment criteria to deeply compare two articles on the same task, providing precise scores and clear justifications.
-</system_role>"""
+</system_role>
+"""
 
 SYSTEM_PROMPT_ZH = """<system_role>
 你是一名严格、细致、客观的调研文章评估专家。你擅长根据具体的评估标准，深入比较两篇针对同一任务的文章，并给出精确的评分和清晰的理由。
-</system_role>"""
+</system_role>
+"""
 
 SCORE_PROMPT_EN = """
 <user_prompt>
 **Task Background**
 There is a deep research task, and you need to evaluate two research articles written for this task. We will assess the articles across four dimensions: Comprehensiveness, Insight, Instruction Following, and Readability. The content is as follows:
+
+
 <task>
 "{task_prompt}"
 </task>

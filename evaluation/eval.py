@@ -208,7 +208,7 @@ def format_criteria_list(criteria_data: Dict[str, Any]) -> str:
 
     return json.dumps(criteria_for_prompt, ensure_ascii=False, indent=2)
 
-
+@weave.op
 def calculate_weighted_scores(
     judge_output: JudgeOutput,
     criteria_data: Dict[str, Any],
@@ -333,11 +333,31 @@ def call_judge(
     system_prompt: str,
     model: str,
     temperature: float = 1.0,
+    reasoning_effort: float = "low",
 ) -> JudgeOutput:
     """
     Call the LLM judge and return parsed Pydantic model.
     """
 
+    llm_kwargs = {
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "judge_output",
+                "schema": JudgeOutput.model_json_schema()
+            }
+        }
+    }
+
+    if "gpt-5" in model:
+        llm_kwargs["reasoning_effort"] = reasoning_effort
+    else:
+        llm_kwargs["temperature"] = temperature
+    
     response = client.chat.completions.create(
         model=model,
         temperature=temperature,
@@ -367,23 +387,14 @@ class DeepResearchWeaveModel(weave.Model):
     Weave model that can either call an agent or consume precomputed answers.
     """
 
-    judge_model: str = "gpt-5-nano"
-    temperature: float = 1.0
     agent_callable: Optional[AgentCallable] = None
-    api_key: Optional[str] = None
-    max_retries: int = 5
-    backoff: float = 1.5
-    _outputs: List[Dict[str, Any]] = PrivateAttr(default_factory=list)
-    _outputs_lock: asyncio.Lock = PrivateAttr(default_factory=asyncio.Lock)
+    evaluation_mode: EvaluationMode = EvaluationMode.ONLINE
 
     @weave.op()
     async def predict(
         self,
         prompt: str,
-        language: str = "en",
-        criteria: Dict[str, Any] = None,
-        reference_article: str = "",
-        target_article: Optional[str] = None,
+        candidate_article: str = None,
         row_index: int = 0,
         row_id: Any = None,
         trial_index: int = 0,
@@ -391,32 +402,24 @@ class DeepResearchWeaveModel(weave.Model):
         """
         Run the agent, judge with OpenAI, and compute normalized scores.
         """
-        candidate_article: Optional[str] = None
         if self.agent_callable is not None:
             candidate_article = await _invoke_agent_callable(
                 self.agent_callable, prompt
             )
-        if candidate_article is None:
-            if target_article is None:
-                raise ValueError(
-                    "No agent callable or target article provided for evaluation."
-                )
-            candidate_article = target_article
-
+        elif candidate_article is not None and self.evaluation_mode == EvaluationMode.OFFLINE:
+            pass
+        else:
+            raise ValueError(
+                "No agent callable provided for evaluation."
+            )
 
         result = {
             "row_index": row_index,
             "trial_index": trial_index,
             "id": row_id,
             "prompt": prompt,
-            "language": language,
             "candidate_article": candidate_article,
-            "reference_article": reference_article,
-            "criteria": criteria or {},
         }
-
-        async with self._outputs_lock:
-            self._outputs.append(result)
 
         return result
 
@@ -426,10 +429,10 @@ class DeepResearchScorer(weave.Scorer):
     """
 
     name: str = "deep_research_scores"
-    judge_model: str = "gpt-5-nano"
-    system_prompt: str = ""
+    judge_model: str = "gpt-5-nano-2025-08-07"
     judge_prompt: str = ""
     temperature: float = 1.0
+    reasoning_effort: str = "low",
     api_key: str = ""
     criteria: Dict[str, Any] = {}
 
@@ -441,26 +444,31 @@ class DeepResearchScorer(weave.Scorer):
             prompt=judge_prompt,
             model=self.judge_model,
             temperature=self.temperature,
+            reasoning_effort=self.reasoning_effort,
         )
 
     @weave.op()
-    def score(self, *, output: Dict[str, Any], criteria: Dict[str, Any]) -> Dict[str, Any]:
+    def score(self, output: Dict[str, Any], **kwargs) -> Dict[str, Any]:
         '''
         Score the output using the judge model.
         '''
         # Prefer per-row criteria if present; fall back to scorer-level default
+        criteria = kwargs.get('criteria', self.criteria)
         criteria_list_str = format_criteria_list(criteria)
 
+        language = kwargs.get('language', "en")
+        reference_article = kwargs.get('reference_article', "")
+
         system_prompt, judge_prompt = build_judge_prompt(
-            language=output["language"],
+            language=language,
             task_prompt=output["prompt"],
             article_1=output["candidate_article"],
-            article_2=output["reference_article"],
+            article_2=reference_article,
             criteria_list=criteria_list_str,
         )
 
-        judge_output = self._call_judge_sync(judge_prompt, system_prompt)
-        weighted_scores = calculate_weighted_scores(judge_output, criteria)
+        judge_output = self._call_judge_sync(judge_prompt=judge_prompt, system_prompt=system_prompt)
+        weighted_scores = calculate_weighted_scores(judge_output=judge_output, criteria_data=criteria)
 
         normalized_scores = compute_normalized_scores(
             weighted_scores if isinstance(weighted_scores, dict) else {}
@@ -508,7 +516,7 @@ def normalize_dimension(target: float, reference: float) -> float:
         return 0.0
     return target / denom
 
-
+@weave.op
 def compute_normalized_scores(weighted_scores: Dict[str, Any]) -> Dict[str, float]:
     """
     Compute normalized scores for target vs reference dimensions.
@@ -589,7 +597,7 @@ def load_inputs(
     ]
 
     target_items = load_jsonl(target_path) if target_path is not None else []
-    target_map = build_maps(target_items, ArticleRecord, ("id", "prompt", "article"))
+    candidate_article_map = build_maps(target_items, ArticleRecord, ("id", "prompt", "article"))
     reference_map = build_maps(
         load_jsonl(reference_path), ArticleRecord, ("id", "prompt", "article")
     )
@@ -599,18 +607,18 @@ def load_inputs(
     assert len(reference_map) > 0, "No reference map provided"
     assert len(criteria_map) > 0, "No criteria map provided"
 
-    return tasks, target_map, reference_map, criteria_map
+    return tasks, candidate_article_map, reference_map, criteria_map
 
 
 def filter_tasks(
     tasks: List[TaskRecord],
-    target_map: Dict[str, ArticleRecord],
+    candidate_article_map: Dict[str, ArticleRecord],
     reference_map: Dict[str, ArticleRecord],
     criteria_map: Dict[str, Dict[str, Any]],
     language: Optional[str],
     limit: Optional[int],
     *,
-    require_target: bool,
+    require_candidate_article: bool,
 ) -> List[TaskRecord]:
     """
     Filter tasks
@@ -619,7 +627,7 @@ def filter_tasks(
     for task in tasks:
         if language and task.language != language:
             continue
-        if require_target and task.prompt not in target_map:
+        if require_candidate_article and task.prompt not in candidate_article_map:
             continue
         if task.prompt not in reference_map or task.prompt not in criteria_map:
             continue
@@ -631,11 +639,12 @@ def filter_tasks(
 
 def build_evaluation_dataset(
     tasks: List[TaskRecord],
-    target_map: Dict[str, ArticleRecord],
+    candidate_article_map: Dict[str, ArticleRecord],
     reference_map: Dict[str, ArticleRecord],
     criteria_map: Dict[str, Dict[str, Any]],
+    evaluation_mode: EvaluationMode = EvaluationMode.ONLINE,
     *,
-    require_target: bool,
+    require_candidate_article: bool,
 ) -> List[Dict[str, Any]]:
     """
     Construct dataset rows passed into weave.Evaluation.
@@ -645,7 +654,11 @@ def build_evaluation_dataset(
         raise ValueError("No tasks provided for evaluation")
 
     for index, task in enumerate(tasks):
-        target_entry = target_map.get(task.prompt)
+        if evaluation_mode == EvaluationMode.OFFLINE:
+            candidate_article_entry = candidate_article_map.get(task.prompt)
+        else:
+            candidate_article_entry = None
+        
         reference_entry = reference_map.get(task.prompt)
         criteria_entry = criteria_map.get(task.prompt)
         if reference_entry is None or criteria_entry is None:
@@ -653,7 +666,7 @@ def build_evaluation_dataset(
                 "Skipping prompt without reference/criteria: %s", task.prompt
             )
             continue
-        if require_target and target_entry is None:
+        if require_candidate_article and candidate_article_entry is None:
             logger.warning(
                 "Skipping prompt without precomputed answer in offline mode: %s",
                 task.prompt,
@@ -665,7 +678,7 @@ def build_evaluation_dataset(
                 "row_id": task.id if task.id is not None else index,
                 "prompt": task.prompt,
                 "language": task.language,
-                "target_article": target_entry.article if target_entry else None,
+                "candidate_article": candidate_article_entry.article if candidate_article_entry else None,
                 "reference_article": reference_entry.article,
                 "criteria": criteria_entry,
                 "trial_index": 0,
@@ -753,7 +766,7 @@ def _prepare_weave_attributes(
 
 
 def run_evaluation(
-    args: "EvalConfig",
+    eval_config: "EvalConfig",
     agent_callable: Optional[AgentCallable] = None,
     weave_attributes: Optional[Dict[str, Any]] = None,
 ) -> Union[
@@ -772,14 +785,14 @@ def run_evaluation(
     if not os.environ.get("OPENAI_API_KEY"):
         raise ValueError("OPENAI_API_KEY is not set, please set it in the .env file.")
 
-    if args.debug:
-        args.limit = 2
-        args.trials = 1
-        args.weave_parallelism = 1
-        args.evaluation_name = args.evaluation_name + "_debug"
-        args.max_retries = 1
+    if eval_config.debug:
+        eval_config.limit = 2
+        eval_config.trials = 1
+        eval_config.weave_parallelism = 1
+        eval_config.evaluation_name = "debug_" + eval_config.evaluation_name
+        eval_config.max_retries = 1
 
-    mode_value = args.mode
+    mode_value = eval_config.mode
     mode = (
         mode_value
         if isinstance(mode_value, EvaluationMode)
@@ -793,29 +806,29 @@ def run_evaluation(
         raise ValueError(
             "Online evaluation requires an agent_callable to generate answers."
         )
-    if mode is EvaluationMode.OFFLINE and args.target is None:
+    if mode is EvaluationMode.OFFLINE and eval_config.target is None:
         raise ValueError(
             "Offline evaluation requires a --target JSONL file of precomputed answers."
         )
-    args.mode = mode
+    eval_config.mode = mode
 
-    tasks, target_map, reference_map, criteria_map = load_inputs(
-        args.queries,
-        args.reference,
-        args.criteria,
-        target_path=args.target,
+    tasks, candidate_article_map, reference_map, criteria_map = load_inputs(
+        eval_config.queries,
+        eval_config.reference,
+        eval_config.criteria,
+        target_path=eval_config.target,
     )
 
-    target_language = None if args.language == "all" else args.language
-    require_target = mode is EvaluationMode.OFFLINE
+    target_language = None if eval_config.language == "all" else eval_config.language
+    require_candidate_article = mode is EvaluationMode.OFFLINE
     tasks_to_run = filter_tasks(
         tasks,
-        target_map,
+        candidate_article_map,
         reference_map,
         criteria_map,
         language=target_language,
-        limit=args.limit,
-        require_target=require_target,
+        limit=eval_config.limit,
+        require_candidate_article=require_candidate_article,
     )
 
     if not tasks_to_run:
@@ -823,60 +836,58 @@ def run_evaluation(
         return [], {}
 
     dataset_rows = build_evaluation_dataset(
-        tasks_to_run,
-        target_map,
-        reference_map,
-        criteria_map,
-        require_target=require_target,
+        tasks=tasks_to_run,
+        candidate_article_map=candidate_article_map,
+        reference_map=reference_map,
+        criteria_map=criteria_map,
+        evaluation_mode=mode,
+        require_candidate_article=require_candidate_article,
     )
-    if args.debug:
-        dataset_rows = dataset_rows[:args.limit] if args.limit else dataset_rows[:2] # pylint: disable=unsubscriptable-object
+    if eval_config.debug:
+        dataset_rows = dataset_rows[:eval_config.limit] if eval_config.limit else dataset_rows[:2] # pylint: disable=unsubscriptable-object
 
     
     if not dataset_rows or len(dataset_rows) == 0:
         raise ValueError("No dataset rows constructed for evaluation")
     print(f"{len(dataset_rows)} dataset rows constructed for evaluation")
 
-    if args.weave_parallelism is not None:
-        os.environ["WEAVE_PARALLELISM"] = str(args.weave_parallelism)
+    if eval_config.weave_parallelism is not None:
+        os.environ["WEAVE_PARALLELISM"] = str(eval_config.weave_parallelism)
 
-    init_project = _resolve_wandb_project(args)
+    init_project = _resolve_wandb_project(eval_config)
     weave.init(init_project)
 
-    attributes = _prepare_weave_attributes(args, weave_attributes)
-
-    evaluation = weave.Evaluation(
-        name=args.evaluation_name,
-        dataset=dataset_rows,
-        scorers=[DeepResearchScorer(
-            judge_model=args.judge_model,
-            temperature=args.temperature,
-            api_key=os.environ.get("OPENAI_API_KEY"),
-        )],
-        trials=args.trials,
-    )
+    attributes = _prepare_weave_attributes(eval_config, weave_attributes)
 
     model = DeepResearchWeaveModel(
-        judge_model=args.judge_model,
-        temperature=args.temperature,
         agent_callable=agent_callable,
-        api_key=os.environ.get("OPENAI_API_KEY"),
-        max_retries=args.max_retries,
-        backoff=args.retry_backoff,
+    )
+
+    evaluation = weave.Evaluation(
+        name=eval_config.evaluation_name,
+        dataset=dataset_rows,
+        scorers=[DeepResearchScorer(
+            judge_model=eval_config.judge_model,
+            temperature=eval_config.temperature,
+            reasoning_effort=eval_config.reasoning_effort,
+            api_key=os.environ.get("OPENAI_API_KEY"),
+        )],
+        trials=eval_config.trials,
     )
 
     async def _evaluate() -> Tuple[List[EvaluationResult], Dict[str, float]]:
         with weave.attributes(attributes):
-            await evaluation.evaluate(
+            results = await evaluation.evaluate(
                 model,
-                __weave={"display_name": args.evaluation_name},  # pylint: disable=not-callable
+                __weave={"display_name": eval_config.evaluation_name},  # pylint: disable=not-callable
             )
 
-        outputs = model._outputs
-        results = outputs_to_evaluation_results(outputs, dataset_rows)
-        results.sort(key=lambda res: res.id if res.id is not None else 1e9)
-        aggregated_summary = aggregate_results(results)
-        return results, aggregated_summary
+        # outputs = model._outputs
+        # results = outputs_to_evaluation_results(outputs, dataset_rows)
+        # results.sort(key=lambda res: res.id if res.id is not None else 1e9)
+        # aggregated_summary = aggregate_results(results)
+        # return results, aggregated_summary
+        return results
 
     try:
         asyncio.get_running_loop()
@@ -909,8 +920,8 @@ def parse_args(argv: Optional[List[str]] = None) -> EvalConfig:
     """
     parser = ArgumentParser(description="Minimal DeepResearch RACE evaluator")
     parser.add_arguments(EvalConfig, dest="config")
-    args = parser.parse_args(argv)
-    return args.config
+    eval_config = parser.parse_args(argv)
+    return eval_config.config
 
 
 def configure_logging() -> None:
@@ -928,30 +939,30 @@ def main(argv: Optional[List[str]] = None) -> None:
     Main function
     """
     configure_logging()
-    args = parse_args(argv)
+    eval_config = parse_args(argv)
 
     logging.info("Loading inputs and running evaluation...")
     mode_value = (
-        args.mode
-        if isinstance(args.mode, EvaluationMode)
-        else EvaluationMode(args.mode)
+        eval_config.mode
+        if isinstance(eval_config.mode, EvaluationMode)
+        else EvaluationMode(eval_config.mode)
     )
     if mode_value is EvaluationMode.ONLINE:
         raise ValueError(
             "CLI execution only supports offline mode. Use evaluate_agent for online runs."
         )
 
-    results, summary = run_evaluation(args)
+    results, summary = run_evaluation(eval_config)
 
     if not results:
         logging.warning("No evaluations completed")
         return
 
-    logging.info("Saving raw results to %s", args.output)
-    save_results(results, args.output)
+    logging.info("Saving raw results to %s", eval_config.output)
+    save_results(results, eval_config.output)
 
     logging.info("Computing summary averages...")
-    save_summary(summary, args.summary)
+    save_summary(summary, eval_config.summary)
 
     logging.info("Summary: %s", summary)
 
