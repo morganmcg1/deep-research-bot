@@ -403,9 +403,17 @@ class DeepResearchWeaveModel(weave.Model):
         Run the agent, judge with OpenAI, and compute normalized scores.
         """
         if self.agent_callable is not None:
-            candidate_article = await _invoke_agent_callable(
+            result = await _invoke_agent_callable(
                 self.agent_callable, prompt
             )
+            if isinstance(result, BaseModel):
+                candidate_article = result.final_assistant_content
+            elif isinstance(result, str):
+                candidate_article = result
+            else:
+                raise ValueError(
+                    "Invalid result type from agent callable in DeepResearchWeaveModel.predict."
+                )
         elif candidate_article is not None and self.evaluation_mode == EvaluationMode.OFFLINE:
             pass
         else:
