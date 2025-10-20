@@ -147,30 +147,4 @@ class AgentState(BaseModel):
     step: int = Field(default=0)
     final_assistant_content: str | None = None # Populated at the end of a run
 
-    estimated_tokens: int = Field(default=0)
-    max_tokens: int = Field(default=128000)
-    compaction_count: int = Field(dafauly=0)
 
-    def utilization_percentage(self) -> float: 
-        """
-        Calculate how much of the context window is being used.
-
-        Returns: 
-            float: Percentage from 0-100
-        """
-        if self.max_tokens == 0
-            return 0.0
-        return (self.estimated_tokens / self.max_tokens) * 100
-    
-    def needs_compaction(self, threshold: float = 0.8) -> bool:
-        """
-        Check if the context window is nearing the threshold for compaction.
-
-        Args:
-            threshold: Percentage threshold for compaction
-
-        Returns:
-            bool: True if compaction is needed, False otherwise
-        """
-        threshold_tokens = self.max_tokens * threshold
-        return self.estimated_tokens >= threshold_tokens
