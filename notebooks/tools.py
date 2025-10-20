@@ -50,7 +50,7 @@ def call_model(model_name: str, messages: List[Dict[str, Any]], **kwargs) -> str
     return response.choices[0].message
 
 
-@weave.op 
+@weave.op
 @function_tool
 def exa_search(query: str, num_results: int = 5) -> list[dict[str, str]]:
     """Perform a search query on the web and retrieve the most relevant URLs and web content.
@@ -83,7 +83,7 @@ def exa_search(query: str, num_results: int = 5) -> list[dict[str, str]]:
 
     
 
-@weave.op 
+@weave.op
 @function_tool
 async def async_exa_search_and_refine(query: str, num_results: int = 5) -> list[dict[str, str]]:
     """Perform a search query on the web and retrieve the most relevant URLs and web content.
