@@ -21,6 +21,7 @@ Weights & Biases Weave.
 from __future__ import annotations
 
 import asyncio
+import functools
 import inspect
 import itertools
 import json
@@ -135,15 +136,37 @@ def _ensure_text_response(response: AgentCallableReturn) -> str:
     return json.dumps(response, ensure_ascii=False)
 
 
+def _is_async_callable(callable_like: AgentCallable) -> bool:
+    """
+    Determine if the provided callable is coroutine based (including partials and functors).
+    """
+    if asyncio.iscoroutinefunction(callable_like):
+        return True
+    if isinstance(callable_like, functools.partial):
+        return _is_async_callable(callable_like.func)  # type: ignore[arg-type]
+    call_attr = getattr(callable_like, "__call__", None)
+    if call_attr is not None and asyncio.iscoroutinefunction(call_attr):
+        return True
+    return False
+
+
 async def _invoke_agent_callable(
     agent_callable: AgentCallable, prompt: str
 ) -> Optional[str]:
     """
     Call agent callable (sync or async) and return normalized text.
+
+    Blocking callables are executed in a background thread so that Weave can
+    schedule multiple evaluation rows concurrently.
     """
-    result = agent_callable(prompt)
+    if _is_async_callable(agent_callable):
+        result = agent_callable(prompt)
+    else:
+        result = await asyncio.to_thread(agent_callable, prompt)
+
     if inspect.isawaitable(result):
         result = await result  # type: ignore[assignment]
+
     if result is None:
         return None
     return _ensure_text_response(result)
