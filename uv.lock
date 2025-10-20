@@ -550,12 +550,15 @@ wheels = [
 [[package]]
 name = "deep-research-bot"
 version = "0.1.0"
-source = { virtual = "." }
+source = { editable = "." }
 dependencies = [
     { name = "exa-py" },
     { name = "ipykernel" },
     { name = "jupyterlab" },
     { name = "openai" },
+    { name = "pydantic" },
+    { name = "pytest" },
+    { name = "python-dotenv" },
     { name = "rich" },
     { name = "simple-parsing" },
     { name = "weave" },
@@ -567,9 +570,12 @@ requires-dist = [
     { name = "ipykernel", specifier = ">=7.0.1" },
     { name = "jupyterlab", specifier = ">=4.4.9" },
     { name = "openai", specifier = ">=2.3.0" },
+    { name = "pydantic", specifier = ">=2.0" },
+    { name = "pytest" },
+    { name = "python-dotenv" },
     { name = "rich", specifier = ">=14.2.0" },
     { name = "simple-parsing", specifier = ">=0.1.7" },
-    { name = "weave", specifier = ">=0.52.9" },
+    { name = "weave", specifier = ">=0.52.10" },
 ]
 
 [[package]]
@@ -873,6 +879,15 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/6f/6d/0703ccc57f3a7233505399edb88de3cbd678da106337b9fcde432b65ed60/idna-3.11.tar.gz", hash = "sha256:795dafcc9c04ed0c1fb032c2aa73654d8e8c5023a7df64a53f39190ada629902", size = 194582 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0e/61/66938bbb5fc52dbdf84594873d5b51fb1f7c7794e9c0f5bd885f30bc507b/idna-3.11-py3-none-any.whl", hash = "sha256:771a87f49d9defaf64091e6e6fe9c18d4833f140bd19464795bc32d966ca37ea", size = 71008 },
+]
+
+[[package]]
+name = "iniconfig"
+version = "2.3.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/72/34/14ca021ce8e5dfedc35312d08ba8bf51fdd999c576889fc2c24cb97f4f10/iniconfig-2.3.0.tar.gz", hash = "sha256:c76315c77db068650d49c5b56314774a7804df16fee4402c1f19d6d15d8c4730", size = 20503 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/b1/3846dd7f199d53cb17f49cba7e651e9ce294d8497c8c150530ed11865bb8/iniconfig-2.3.0-py3-none-any.whl", hash = "sha256:f631c04d2c48c52b84d0d0549c99ff3859c98df65b3101406327ecc7d53fbf12", size = 7484 },
 ]
 
 [[package]]
@@ -1694,6 +1709,15 @@ wheels = [
 ]
 
 [[package]]
+name = "pluggy"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/f9/e2/3e91f31a7d2b083fe6ef3fa267035b518369d9511ffab804f839851d2779/pluggy-1.6.0.tar.gz", hash = "sha256:7dcc130b76258d33b90f61b658791dede3486c3e6bfb003ee5c9bfb396dd22f3", size = 69412 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/54/20/4d324d65cc6d9205fabedc306948156824eb9f0ee1633355a8f7ec5c66bf/pluggy-1.6.0-py3-none-any.whl", hash = "sha256:e920276dd6813095e9377c0bc5566d94c932c33b27a3e3945d8389c374dd4746", size = 20538 },
+]
+
+[[package]]
 name = "polyfile-weave"
 version = "0.5.7"
 source = { registry = "https://pypi.org/simple" }
@@ -1954,6 +1978,22 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/0f/49/4cea918a08f02817aabae639e3d0ac046fef9f9180518a3ad394e22da148/pyreadline3-3.5.4.tar.gz", hash = "sha256:8d57d53039a1c75adba8e50dd3d992b28143480816187ea5efbd5c78e6c885b7", size = 99839 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5a/dc/491b7661614ab97483abf2056be1deee4dc2490ecbf7bff9ab5cdbac86e1/pyreadline3-3.5.4-py3-none-any.whl", hash = "sha256:eaf8e6cc3c49bcccf145fc6067ba8643d1df34d604a1ec0eccbf7a18e6d3fae6", size = 83178 },
+]
+
+[[package]]
+name = "pytest"
+version = "8.4.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "colorama", marker = "sys_platform == 'win32'" },
+    { name = "iniconfig" },
+    { name = "packaging" },
+    { name = "pluggy" },
+    { name = "pygments" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/a3/5c/00a0e072241553e1a7496d638deababa67c5058571567b92a7eaa258397c/pytest-8.4.2.tar.gz", hash = "sha256:86c0d0b93306b961d58d62a4db4879f27fe25513d4b969df351abdddb3c30e01", size = 1519618 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a8/a4/20da314d277121d6534b3a980b29035dcd51e6744bd79075a6ce8fa4eb8d/pytest-8.4.2-py3-none-any.whl", hash = "sha256:872f880de3fc3a5bdc88a11b39c9710c3497a547cfa9320bc3c5e62fbf272e79", size = 365750 },
 ]
 
 [[package]]
@@ -2547,7 +2587,7 @@ wheels = [
 
 [[package]]
 name = "weave"
-version = "0.52.9"
+version = "0.52.10"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "click" },
@@ -2562,9 +2602,9 @@ dependencies = [
     { name = "tenacity" },
     { name = "wandb" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6e/fc/31b5efb2cccde9a24b8a454f11b776519816bd1d685a96b54c1c0a9ce1a6/weave-0.52.9.tar.gz", hash = "sha256:a08dfd5bf12ea2bc469c92a7612de0709800a4330ef9ea2b15aa38c7a3b11c9a", size = 560378 }
+sdist = { url = "https://files.pythonhosted.org/packages/12/8c/b4ee491f11dc059c6ba50f5fd6bc8178c4d28b2777644fd5136fd654a5b0/weave-0.52.10.tar.gz", hash = "sha256:e12f79bd0bd0992d8245091423a6acebe692b1bedc06ebd3193986bfca6c08b7", size = 565016 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/dd/07/e71d247156718d80b040a13fa2fd90439d59a0b94ee774db80bd962af165/weave-0.52.9-py3-none-any.whl", hash = "sha256:7118abae637a7dd8d3e9bf14a6ae97924e8eba223d0b37212ef86f9de5a1ccda", size = 713019 },
+    { url = "https://files.pythonhosted.org/packages/4b/a3/a6f448529578e7524fcf31ca1d44da5f833cbe4d48ace2af66c77b501f86/weave-0.52.10-py3-none-any.whl", hash = "sha256:19f5f21971e1dc2ba63e8827caa571b41ddffae22b60d476ce5ebaefa1f89ed3", size = 717491 },
 ]
 
 [[package]]
