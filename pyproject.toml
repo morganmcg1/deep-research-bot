@@ -1,3 +1,7 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "deep-research-bot"
 version = "0.1.0"
@@ -19,6 +23,9 @@ dependencies = [
     "weave>=0.52.10",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["deep_research_bot"]
+
 [tool.pytest.ini_options]
 filterwarnings = [
     "ignore::pydantic.warnings.PydanticDeprecatedSince211",
@@ -27,5 +34,4 @@ filterwarnings = [
 ]
 
 [project.scripts]
-deep-research-eval = "eval:main"
-
+deep-research-eval = "deep_research_bot.eval:main"
