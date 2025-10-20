@@ -23,26 +23,18 @@ from __future__ import annotations
 import asyncio
 import functools
 import inspect
-import itertools
 import json
 import logging
 import os
-import time
 import warnings
-from dataclasses import dataclass, field, fields
-from enum import Enum
+from dataclasses import fields
 from pathlib import Path
 from typing import (
     Any,
     Awaitable,
     Callable,
-    Dict,
     Iterable,
-    List,
-    Optional,
     Sequence,
-    Tuple,
-    Union,
 )
 from tenacity import retry, stop_after_attempt, wait_exponential
 import weave
@@ -107,9 +99,9 @@ class EvaluationResult(BaseModel):
     raw_judge: JudgeOutput
 
 
-AgentCallableReturn = Union[str, Dict[str, Any]]
+AgentCallableReturn = str | dict[str, Any]
 AgentCallable = Callable[
-    [str], Union[AgentCallableReturn, Awaitable[AgentCallableReturn]]
+    [str], AgentCallableReturn | Awaitable[AgentCallableReturn]
 ]
 
 
@@ -152,7 +144,7 @@ def _is_async_callable(callable_like: AgentCallable) -> bool:
 
 async def _invoke_agent_callable(
     agent_callable: AgentCallable, prompt: str
-) -> Optional[str]:
+) -> str | None:
     """
     Call agent callable (sync or async) and return normalized text.
 
@@ -172,11 +164,11 @@ async def _invoke_agent_callable(
     return _ensure_text_response(result)
 
 
-def _config_to_metadata(config: "EvalConfig") -> Dict[str, Any]:
+def _config_to_metadata(config: "EvalConfig") -> dict[str, Any]:
     """
     Convert EvalConfig dataclass into a JSON-friendly metadata dict.
     """
-    metadata: Dict[str, Any] = {}
+    metadata: dict[str, Any] = {}
     for config_field in fields(config):
         value = getattr(config, config_field.name)
         if isinstance(value, Path):
@@ -193,11 +185,11 @@ def _config_to_metadata(config: "EvalConfig") -> Dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def load_jsonl(path: Path) -> List[Dict[str, Any]]:
+def load_jsonl(path: Path) -> list[dict[str, Any]]:
     """
     Load JSONL file.
     """
-    data: List[Dict[str, Any]] = []
+    data: list[dict[str, Any]] = []
     with path.open("r", encoding="utf-8") as handle:
         for line in handle:
             line = line.strip()
@@ -207,17 +199,17 @@ def load_jsonl(path: Path) -> List[Dict[str, Any]]:
     return data
 
 
-def format_criteria_list(criteria_data: Dict[str, Any]) -> str:
+def format_criteria_list(criteria_data: dict[str, Any]) -> str:
     """
     Format evaluation criteria list as JSON string, omitting weights.
     """
-    criteria_for_prompt: Dict[str, List[Dict[str, str]]] = {}
+    criteria_for_prompt: dict[str, list[dict[str, str]]] = {}
 
     for dim, criterions in criteria_data.get("criterions", {}).items():
         if not isinstance(criterions, list):
             logging.warning("Unexpected criteria list type for %s", dim)
             continue
-        filtered: List[Dict[str, str]] = []
+        filtered: list[dict[str, str]] = []
         for item in criterions:
             if isinstance(item, dict) and "criterion" in item and "explanation" in item:
                 filtered.append(
@@ -234,8 +226,8 @@ def format_criteria_list(criteria_data: Dict[str, Any]) -> str:
 @weave.op
 def calculate_weighted_scores(
     judge_output: JudgeOutput,
-    criteria_data: Dict[str, Any],
-) -> Dict[str, Any]:
+    criteria_data: dict[str, Any],
+) -> dict[str, Any]:
     """
     Weighted scoring
     """
@@ -244,9 +236,9 @@ def calculate_weighted_scores(
         "reference": {"dims": {}, "total": 0.0},
     }
 
-    dimension_weights: Dict[str, float] = criteria_data.get("dimension_weight", {})
-    criterions: Dict[str, List[Dict[str, Any]]] = criteria_data.get("criterions", {})
-    criterion_weights: Dict[str, Dict[str, float]] = {
+    dimension_weights: dict[str, float] = criteria_data.get("dimension_weight", {})
+    criterions: dict[str, list[dict[str, Any]]] = criteria_data.get("criterions", {})
+    criterion_weights: dict[str, dict[str, float]] = {
         dim: {c["criterion"]: c["weight"] for c in items if "weight" in c}
         for dim, items in criterions.items()
     }
@@ -410,18 +402,18 @@ class DeepResearchWeaveModel(weave.Model):
     Weave model that can either call an agent or consume precomputed answers.
     """
 
-    agent_callable: Optional[AgentCallable] = None
+    agent_callable: AgentCallable | None = None
     evaluation_mode: EvaluationMode = EvaluationMode.ONLINE
 
     @weave.op()
     async def predict(
         self,
         prompt: str,
-        candidate_article: str = None,
+        candidate_article: str | None = None,
         row_index: int = 0,
-        row_id: Any = None,
+        row_id: Any | None = None,
         trial_index: int = 0,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Run the agent, judge with OpenAI, and compute normalized scores.
         """
@@ -465,7 +457,7 @@ class DeepResearchScorer(weave.Scorer):
     temperature: float = 1.0
     reasoning_effort: str = "low",
     api_key: str = ""
-    criteria: Dict[str, Any] = {}
+    criteria: dict[str, Any] = {}
 
     def _call_judge_sync(self, judge_prompt: str, system_prompt: str) -> JudgeOutput:
         client = OpenAI(api_key=self.api_key or None)
@@ -479,7 +471,7 @@ class DeepResearchScorer(weave.Scorer):
         )
 
     @weave.op()
-    def score(self, output: Dict[str, Any], **kwargs) -> Dict[str, Any]:
+    def score(self, output: dict[str, Any], **kwargs) -> dict[str, Any]:
         '''
         Score the output using the judge model.
         '''
@@ -516,7 +508,7 @@ class DeepResearchScorer(weave.Scorer):
         }
 
     @weave.op()
-    def summarize(self, score_rows: List[Dict[str, float]]) -> Dict[str, float]:
+    def summarize(self, score_rows: list[dict[str, float]]) -> dict[str, float]:
         if not score_rows:
             return {}
         totals = {
@@ -548,7 +540,7 @@ def normalize_dimension(target: float, reference: float) -> float:
     return target / denom
 
 @weave.op
-def compute_normalized_scores(weighted_scores: Dict[str, Any]) -> Dict[str, float]:
+def compute_normalized_scores(weighted_scores: dict[str, Any]) -> dict[str, float]:
     """
     Compute normalized scores for target vs reference dimensions.
     """
@@ -583,14 +575,14 @@ def compute_normalized_scores(weighted_scores: Dict[str, Any]) -> Dict[str, floa
 
 
 def build_maps(
-    items: Iterable[Dict[str, Any]],
+    items: Iterable[dict[str, Any]],
     record_cls: type[BaseModel],
-    required_fields: Tuple[str, ...],
-) -> Dict[str, Any]:
+    required_fields: tuple[str, ...],
+) -> dict[str, Any]:
     """
     Build maps
     """
-    mapping: Dict[str, Any] = {}
+    mapping: dict[str, Any] = {}
     for row in items:
         if not all(field in row for field in required_fields):
             continue
@@ -605,12 +597,12 @@ def load_inputs(
     reference_path: Path,
     criteria_path: Path,
     *,
-    target_path: Optional[Path] = None,
-) -> Tuple[
-    List[TaskRecord],
-    Dict[str, ArticleRecord],
-    Dict[str, ArticleRecord],
-    Dict[str, Dict[str, Any]],
+    target_path: Path | None = None,
+) -> tuple[
+    list[TaskRecord],
+    dict[str, ArticleRecord],
+    dict[str, ArticleRecord],
+    dict[str, dict[str, Any]],
 ]:
     """
     Load inputs
@@ -632,7 +624,7 @@ def load_inputs(
     reference_map = build_maps(
         load_jsonl(reference_path), ArticleRecord, ("id", "prompt", "article")
     )
-    criteria_map: Dict[str, Dict[str, Any]] = {
+    criteria_map: dict[str, dict[str, Any]] = {
         row["prompt"]: row for row in load_jsonl(criteria_path) if "prompt" in row
     }
     assert len(reference_map) > 0, "No reference map provided"
@@ -642,15 +634,15 @@ def load_inputs(
 
 
 def filter_tasks(
-    tasks: List[TaskRecord],
-    candidate_article_map: Dict[str, ArticleRecord],
-    reference_map: Dict[str, ArticleRecord],
-    criteria_map: Dict[str, Dict[str, Any]],
-    language: Optional[str],
-    limit: Optional[int],
+    tasks: list[TaskRecord],
+    candidate_article_map: dict[str, ArticleRecord],
+    reference_map: dict[str, ArticleRecord],
+    criteria_map: dict[str, dict[str, Any]],
+    language: str | None,
+    limit: int | None,
     *,
     require_candidate_article: bool,
-) -> List[TaskRecord]:
+) -> list[TaskRecord]:
     """
     Filter tasks
     """
@@ -669,18 +661,18 @@ def filter_tasks(
 
 
 def build_evaluation_dataset(
-    tasks: List[TaskRecord],
-    candidate_article_map: Dict[str, ArticleRecord],
-    reference_map: Dict[str, ArticleRecord],
-    criteria_map: Dict[str, Dict[str, Any]],
+    tasks: list[TaskRecord],
+    candidate_article_map: dict[str, ArticleRecord],
+    reference_map: dict[str, ArticleRecord],
+    criteria_map: dict[str, dict[str, Any]],
     evaluation_mode: EvaluationMode = EvaluationMode.ONLINE,
     *,
     require_candidate_article: bool,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """
     Construct dataset rows passed into weave.Evaluation.
     """
-    dataset_rows: List[Dict[str, Any]] = []
+    dataset_rows: list[dict[str, Any]] = []
     if len(tasks) == 0:
         raise ValueError("No tasks provided for evaluation")
 
@@ -720,14 +712,14 @@ def build_evaluation_dataset(
 
 
 def outputs_to_evaluation_results(
-    outputs: Sequence[Dict[str, Any]],
-    dataset_rows: Sequence[Dict[str, Any]],
-) -> List[EvaluationResult]:
+    outputs: Sequence[dict[str, Any]],
+    dataset_rows: Sequence[dict[str, Any]],
+) -> list[EvaluationResult]:
     """
     Convert weave model outputs into EvaluationResult records, preserving dataset order.
     """
     rows_by_index = {row["row_index"]: row for row in dataset_rows}
-    results: List[EvaluationResult] = []
+    results: list[EvaluationResult] = []
     for output in sorted(
         outputs,
         key=lambda item: (item.get("row_index", 0), item.get("trial_index", 0)),
@@ -756,7 +748,7 @@ def outputs_to_evaluation_results(
     return results
 
 
-def aggregate_results(results: List[EvaluationResult]) -> Dict[str, float]:
+def aggregate_results(results: list[EvaluationResult]) -> dict[str, float]:
     """
     Aggregate results
     """
@@ -775,7 +767,7 @@ def aggregate_results(results: List[EvaluationResult]) -> Dict[str, float]:
     }
 
 
-def _resolve_wandb_project(config: "EvalConfig") -> Optional[str]:
+def _resolve_wandb_project(config: "EvalConfig") -> str | None:
     if config.wandb_project:
         return config.wandb_project
     if config.wandb_entity and config.wandb_project:
@@ -784,8 +776,8 @@ def _resolve_wandb_project(config: "EvalConfig") -> Optional[str]:
 
 
 def _prepare_weave_attributes(
-    config: "EvalConfig", extra: Optional[Dict[str, Any]] = None
-) -> Dict[str, Any]:
+    config: "EvalConfig", extra: dict[str, Any] | None = None
+) -> dict[str, Any]:
     attributes = {}
     if extra:
         attributes.update(extra)
@@ -798,12 +790,9 @@ def _prepare_weave_attributes(
 
 def run_evaluation(
     eval_config: "EvalConfig",
-    agent_callable: Optional[AgentCallable] = None,
-    weave_attributes: Optional[Dict[str, Any]] = None,
-) -> Union[
-    Tuple[List[EvaluationResult], Dict[str, float]],
-    Awaitable[Tuple[List[EvaluationResult], Dict[str, float]]],
-]:
+    agent_callable: AgentCallable | None = None,
+    weave_attributes: dict[str, Any] | None = None,
+) -> tuple[list[EvaluationResult], dict[str, float]] | Awaitable[tuple[list[EvaluationResult], dict[str, float]]]:
     """
     Run evaluation through weave.Evaluation across online or offline modes.
 
@@ -906,7 +895,7 @@ def run_evaluation(
         trials=eval_config.trials,
     )
 
-    async def _evaluate() -> Tuple[List[EvaluationResult], Dict[str, float]]:
+    async def _evaluate() -> tuple[list[EvaluationResult], dict[str, float]]:
         with weave.attributes(attributes):
             results = await evaluation.evaluate(
                 model,
@@ -926,7 +915,7 @@ def run_evaluation(
         return asyncio.run(_evaluate())
     return _evaluate()
 
-def save_results(results: List[EvaluationResult], output_path: Path) -> None:
+def save_results(results: list[EvaluationResult], output_path: Path) -> None:
     """
     Save results
     """
@@ -935,7 +924,7 @@ def save_results(results: List[EvaluationResult], output_path: Path) -> None:
             handle.write(item.model_dump_json(exclude_none=True) + "\n")
 
 
-def save_summary(summary: Dict[str, float], summary_path: Path) -> None:
+def save_summary(summary: dict[str, float], summary_path: Path) -> None:
     """
     Save summary
     """
@@ -945,7 +934,7 @@ def save_summary(summary: Dict[str, float], summary_path: Path) -> None:
         json.dump(summary, handle, ensure_ascii=False, indent=2)
 
 
-def parse_args(argv: Optional[List[str]] = None) -> EvalConfig:
+def parse_args(argv: list[str] | None = None) -> EvalConfig:
     """
     Parse arguments
     """
@@ -965,7 +954,7 @@ def configure_logging() -> None:
     )
 
 
-def main(argv: Optional[List[str]] = None) -> None:
+def main(argv: list[str] | None = None) -> None:
     """
     Main function
     """
@@ -1002,11 +991,8 @@ def run_weave_evaluation(
     config: EvalConfig,
     *,
     agent_callable: AgentCallable,
-    weave_attributes: Optional[Dict[str, Any]] = None,
-) -> Union[
-    Tuple[List[EvaluationResult], Dict[str, float]],
-    Awaitable[Tuple[List[EvaluationResult], Dict[str, float]]],
-]:
+    weave_attributes: dict[str, Any] | None = None,
+) -> tuple[list[EvaluationResult], dict[str, float]] | Awaitable[tuple[list[EvaluationResult], dict[str, float]]]:
     """
     Convenience wrapper to kick off the weave evaluation programmatically.
     """
@@ -1020,11 +1006,8 @@ def evaluate_agent(
     agent_callable: AgentCallable,
     config: EvalConfig,
     *,
-    weave_attributes: Optional[Dict[str, Any]] = None,
-) -> Union[
-    Tuple[List[EvaluationResult], Dict[str, float]],
-    Awaitable[Tuple[List[EvaluationResult], Dict[str, float]]],
-]:
+    weave_attributes: dict[str, Any] | None = None,
+) -> tuple[list[EvaluationResult], dict[str, float]] | Awaitable[tuple[list[EvaluationResult], dict[str, float]]]:
     """
     Evaluate a callable (e.g., agent.run) against the configured DeepResearch benchmark.
     """

@@ -1,12 +1,12 @@
 import openai
 import os
 from exa_py import Exa
-from typing import List, Dict, Any
+from typing import Any
 import weave
 from weave.flow.util import async_foreach
 from dotenv import load_dotenv
 
-from utils import function_tool, console
+from deep_research_bot.utils import function_tool, console
 
 load_dotenv()
 
@@ -28,7 +28,7 @@ oai_client = openai.OpenAI(
 exa_client = Exa(api_key=os.getenv("EXA_API_KEY"))
 
 @weave.op
-async def async_call_model(model_name: str, messages: List[Dict[str, Any]], **kwargs) -> str:
+async def async_call_model(model_name: str, messages: list[dict[str, Any]], **kwargs) -> str:
     "Call a model with the given messages and kwargs."
     response = await async_oai_client.chat.completions.create(
         model=model_name,
@@ -40,7 +40,7 @@ async def async_call_model(model_name: str, messages: List[Dict[str, Any]], **kw
 
 
 @weave.op
-def call_model(model_name: str, messages: List[Dict[str, Any]], **kwargs) -> str:
+def call_model(model_name: str, messages: list[dict[str, Any]], **kwargs) -> str:
     "Call a model with the given messages and kwargs."
     response = oai_client.chat.completions.create(
         model=model_name,
