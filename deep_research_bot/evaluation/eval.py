@@ -105,29 +105,6 @@ AgentCallable = Callable[
 ]
 
 
-def _ensure_text_response(response: AgentCallableReturn) -> str:
-    """
-    Normalize agent callable responses into text, the response can be a string, a dictionary, a BaseModel, or a JSON string.
-    """
-    if isinstance(response, str):
-        return response
-    if isinstance(response, dict):
-        for key in (
-            "article",
-            "answer",
-            "generated_text",
-            "output",
-            "response",
-            "text",
-        ):
-            value = response.get(key)
-            if isinstance(value, str):
-                return value
-    if isinstance(response, BaseModel):
-        return response.model_dump_json(exclude_none=True)
-    return json.dumps(response, ensure_ascii=False)
-
-
 def _is_async_callable(callable_like: AgentCallable) -> bool:
     """
     Determine if the provided callable is coroutine based (including partials and functors).
@@ -161,7 +138,7 @@ async def _invoke_agent_callable(
 
     if result is None:
         return None
-    return _ensure_text_response(result)
+    return result
 
 
 def _config_to_metadata(config: "EvalConfig") -> dict[str, Any]:
@@ -423,6 +400,19 @@ class DeepResearchWeaveModel(weave.Model):
             )
             if isinstance(result, BaseModel):
                 candidate_article = result.final_assistant_content
+            elif isinstance(result, dict):
+                for key in (
+                    "article",
+                    "answer",
+                    "generated_text",
+                    "output",
+                    "response",
+                    "text",
+                ):
+                    value = result.get(key)
+                    if isinstance(value, str):
+                        candidate_article = value
+                        break
             elif isinstance(result, str):
                 candidate_article = result
             else:
