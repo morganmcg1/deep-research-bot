@@ -1,19 +1,10 @@
-
-import sys
-import weave
-from pathlib import Path
 from typing import Any, Callable
+
+import weave
 from pydantic import BaseModel, Field
-
 from deep_research_bot.utils import function_tool, perform_tool_calls, console
-from deep_research_bot.tools import exa_search_and_refine, call_model
-from deep_research_bot.evaluation.eval import run_evaluation
-from deep_research_bot.evaluation.eval_config import EvalConfig
+from deep_research_bot.tools import call_model
 
-
-WANDB_ENTITY = "wandb-applied-ai-team"
-WANDB_PROJECT = "london-workshop-2025"
-MODEL_SMALL = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 
 class AgentState(BaseModel):
     """Manages the state of the agent."""
@@ -61,7 +52,7 @@ class SimpleAgent:
         return AgentState(messages=messages, step=step, final_assistant_content=final_assistant_content)
 
     @weave.op(name="SimpleAgent.run")
-    def run(self, user_prompt: str, max_turns: int = 10) -> AgentState: 
+    def run(self, user_prompt: str, max_turns: int = 10) -> AgentState:
         state = AgentState(messages=[
             {"role": "system", "content": self.system_message},
             {"role": "user", "content": user_prompt}])
@@ -71,35 +62,3 @@ class SimpleAgent:
             if state.final_assistant_content:
                 return state
         return state
-
-
-if __name__ == "__main__":
-
-    weave.init(f"{WANDB_ENTITY}/{WANDB_PROJECT}")
-
-    agent = SimpleAgent(
-        model_name=MODEL_SMALL,
-        system_message="You are an agent that has access to an advanced search engine. Please provide the user with the information they are looking for by using the search tool provided. Make sure to keep the sources. Always use tools to obtain reliable results. Return the final answer in markdown format.",
-        tools=[exa_search_and_refine]
-    )
-
-    # Add project root to Python path
-    project_root = Path.cwd().parent
-    if str(project_root) not in sys.path:
-        sys.path.insert(0, str(project_root))
-
-
-    eval_config = EvalConfig(
-        evaluation_name=f"SimpleAgent_{agent.model_name}",
-        trials=1,
-        limit=100,
-        weave_parallelism=50,
-        queries=project_root / "data/prompt_data/query.jsonl",
-        reference=project_root / "data/test_data/cleaned_data/reference.jsonl",
-        criteria=project_root / "data/criteria_data/criteria.jsonl",
-    )
-
-    results = run_evaluation(
-        eval_config=eval_config,
-        agent_callable=agent.run,
-)

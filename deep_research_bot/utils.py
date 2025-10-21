@@ -7,8 +7,6 @@ from rich.panel import Panel
 from rich.console import Console as RichConsole
 from typing import Any, Callable, get_type_hints
 from openai.types.chat.chat_completion_message_function_tool_call import ChatCompletionMessageFunctionToolCall
-from pydantic import BaseModel, Field
-
 
 
 class Console(RichConsole):
@@ -139,10 +137,3 @@ def perform_tool_calls(tools: list[Callable], tool_calls: list[ChatCompletionMes
             "content": str(tool_response),
         })
     return messages
-
-
-class AgentState(BaseModel):
-    """Manages the state of the agent."""
-    messages: list[dict[str, Any]] = Field(default_factory=list)
-    step: int = Field(default=0)
-    final_assistant_content: str | None = None # Populated at the end of a run
