@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 
 from pydantic import BaseModel, Field
-from typing import List, Optional
 
 # ---------------------------------------------------------------------------
 # Prompt templates (English + Chinese)
@@ -17,10 +16,10 @@ class CriterionScore(BaseModel):
 
 class JudgeOutput(BaseModel):
     '''Judge output structure'''
-    comprehensiveness: List[CriterionScore] = Field(description="List of criterion scores for comprehensiveness")
-    insight: List[CriterionScore] = Field(description="List of criterion scores for insight")
-    instruction_following: List[CriterionScore] = Field(description="List of criterion scores for instruction following")
-    readability: List[CriterionScore] = Field(description="List of criterion scores for readability")
+    comprehensiveness: list[CriterionScore] = Field(description="list of criterion scores for comprehensiveness")
+    insight: list[CriterionScore] = Field(description="list of criterion scores for insight")
+    instruction_following: list[CriterionScore] = Field(description="list of criterion scores for instruction following")
+    readability: list[CriterionScore] = Field(description="list of criterion scores for readability")
 
 
 SYSTEM_PROMPT_EN = """<system_role>

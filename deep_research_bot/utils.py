@@ -8,8 +8,6 @@ from rich.console import Console as RichConsole
 from typing import Any, Callable, get_type_hints
 from openai.types.chat.chat_completion_message_function_tool_call import ChatCompletionMessageFunctionToolCall
 from pydantic import BaseModel, Field
-from typing import Dict, List
-
 
 
 
@@ -69,7 +67,7 @@ def _generate_tool_schema(func: Callable) -> dict:
         elif param_type == int: json_type = "integer"
         elif param_type == float: json_type = "number"
         elif param_type == bool: json_type = "boolean"
-        elif hasattr(param_type, '__origin__') and param_type.__origin__ is list: # Handle List[type]
+        elif hasattr(param_type, '__origin__') and param_type.__origin__ is list: # Handle list[type]
              item_type = param_type.__args__[0] if param_type.__args__ else Any
              if item_type == str: param_schema = {"type": "array", "items": {"type": "string"}}
              elif item_type == int: param_schema = {"type": "array", "items": {"type": "integer"}}
@@ -79,7 +77,7 @@ def _generate_tool_schema(func: Callable) -> dict:
              json_type = "string"
              param_schema["enum"] = [e.value for e in param_type]
 
-        if not param_schema: # If not set by List or Enum
+        if not param_schema: # If not set by list or Enum
             param_schema["type"] = json_type
 
         param_schema["description"] = param_descriptions.get(name, "")
@@ -145,6 +143,6 @@ def perform_tool_calls(tools: list[Callable], tool_calls: list[ChatCompletionMes
 
 class AgentState(BaseModel):
     """Manages the state of the agent."""
-    messages: List[Dict[str, Any]] = Field(default_factory=list)
+    messages: list[dict[str, Any]] = Field(default_factory=list)
     step: int = Field(default=0)
     final_assistant_content: str | None = None # Populated at the end of a run
