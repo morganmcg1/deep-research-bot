@@ -325,7 +325,7 @@ def call_judge(
     system_prompt: str,
     model: str,
     temperature: float = 1.0,
-    reasoning_effort: float = "low",
+    reasoning_effort: str = "low",
 ) -> JudgeOutput:
     """
     Call the LLM judge and return parsed Pydantic model.
