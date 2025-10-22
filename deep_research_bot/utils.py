@@ -114,11 +114,21 @@ def perform_tool_calls(tools: list[Callable], tool_calls: list[ChatCompletionMes
     messages = []
     for tool_call in tool_calls:
         function_name = tool_call.function.name
-        function_args = json.loads(tool_call.function.arguments)
         
-        with console.status(f"[bold cyan]Executing {function_name}...[/bold cyan]"):
-            tool = _get_tool(tools, function_name)
-            tool_response = tool(**function_args)
+        try:
+            function_args = json.loads(tool_call.function.arguments)
+        except json.JSONDecodeError as e:
+            console.print(f"[red]✗ Invalid JSON in tool call arguments for {function_name}[/red]")
+            console.print(f"[dim]Error: {e}[/dim]")
+            console.print(f"[dim]Arguments: {tool_call.function.arguments[:200]}...[/dim]")
+            
+            # Return a simple, safe error message to the agent so it can recover
+            messages.append({
+                "tool_call_id": tool_call.id,
+                "role": "tool",
+                "content": f"Error: The JSON format for {function_name} was invalid. Please ensure the argument is properly formatted JSON with all text inside the parameter value.",
+            })
+            continue
         
         # Create panel content
         panel_content = f"[bold cyan]🔧 Tool Call:[/bold cyan] {function_name}\n\n"
