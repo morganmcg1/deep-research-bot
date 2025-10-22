@@ -14,7 +14,7 @@ dependencies = [
     "exa-py>=1.16.1",
     "ipykernel>=7.0.1",
     "jupyterlab>=4.4.9",
-    "openai>=2.3.0",
+    "openai>=1.99.1",
     "pytest",
     "pydantic>=2.0",
     "python-dotenv",
