@@ -128,7 +128,8 @@ def perform_tool_calls(tools: list[Callable], tool_calls: list[ChatCompletionMes
                 "role": "tool",
                 "content": f"Error: The JSON format for {function_name} was invalid. Please ensure the argument is properly formatted JSON with all text inside the parameter value.",
             })
-            continue
+            # no reason to continue if the JSON is invalid
+            return messages
         
         try:
             with console.status(f"[bold cyan]Executing {function_name}...[/bold cyan]"):
@@ -158,4 +159,5 @@ def perform_tool_calls(tools: list[Callable], tool_calls: list[ChatCompletionMes
                 "role": "tool",
                 "content": f"Error executing tool: {str(e)}",
             })
+            
     return messages
