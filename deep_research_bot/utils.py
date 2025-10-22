@@ -15,6 +15,27 @@ class Console(RichConsole):
 
 console = Console()
 
+def estimate_token_count(messages: list[dict[str, Any]]) -> int:
+    """
+    Estimate token count for messages using character-based heuristic. 4 tokens per character.
+    """
+    total_chars = 0
+    
+    for message in messages:
+        # Convert entire message to string and count characters
+        # This includes role, content, and any other fields
+        message_str = json.dumps(message)
+        total_chars += len(message_str)
+    
+    # Rough heuristic: 4 characters ≈ 1 token
+    base_estimate = total_chars / 4
+    
+    # Add 10% overhead for message formatting 
+    # (things like <|start|>assistant, etc.)
+    with_overhead = base_estimate * 1.1
+    
+    return int(with_overhead)
+
 
 def _generate_tool_schema(func: Callable) -> dict:
     """Given a Python function, generate a tool-compatible JSON schema.
