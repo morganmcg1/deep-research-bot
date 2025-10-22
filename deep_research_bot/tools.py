@@ -28,9 +28,9 @@ oai_client = openai.OpenAI(
 exa_client = Exa(api_key=os.getenv("EXA_API_KEY"))
 
 @weave.op
-async def async_call_model(model_name: str, messages: list[dict[str, Any]], **kwargs) -> str:
+async def async_call_model(model_name: str, messages: list[dict[str, Any]], oai_client: openai.AsyncOpenAI = async_oai_client, **kwargs) -> str:
     "Call a model with the given messages and kwargs."
-    response = await async_oai_client.chat.completions.create(
+    response = await oai_client.chat.completions.create(
         model=model_name,
         messages=messages,
         **kwargs
@@ -40,7 +40,7 @@ async def async_call_model(model_name: str, messages: list[dict[str, Any]], **kw
 
 
 @weave.op
-def call_model(model_name: str, messages: list[dict[str, Any]], **kwargs) -> str:
+def call_model(model_name: str, messages: list[dict[str, Any]], oai_client: openai.OpenAI = oai_client, **kwargs) -> str:
     "Call a model with the given messages and kwargs."
     response = oai_client.chat.completions.create(
         model=model_name,
