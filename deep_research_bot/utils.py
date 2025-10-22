@@ -130,20 +130,32 @@ def perform_tool_calls(tools: list[Callable], tool_calls: list[ChatCompletionMes
             })
             continue
         
-        # Create panel content
-        panel_content = f"[bold cyan]🔧 Tool Call:[/bold cyan] {function_name}\n\n"
-        panel_content += f"[dim]Args: {tool_call.function.arguments}[/dim]\n\n"
-        
-        if isinstance(tool_response, list):
-            panel_content += f"[green]✓[/green] Found {len(tool_response)} results"
-        else:
-            panel_content += f"[green]✓[/green] {function_name} executed successfully"
-        
-        console.print(Panel(panel_content, border_style="cyan"))
-        
-        messages.append({
-            "tool_call_id": tool_call.id,
-            "role": "tool",
-            "content": str(tool_response),
-        })
+        try:
+            with console.status(f"[bold cyan]Executing {function_name}...[/bold cyan]"):
+                tool = _get_tool(tools, function_name)
+                tool_response = tool(**function_args)
+            
+            # Create panel content
+            panel_content = f"[bold cyan]🔧 Tool Call:[/bold cyan] {function_name}\n\n"
+            panel_content += f"[dim]Args: {tool_call.function.arguments}[/dim]\n\n"
+            
+            if isinstance(tool_response, list):
+                panel_content += f"[green]✓[/green] Found {len(tool_response)} results"
+            else:
+                panel_content += f"[green]✓[/green] {function_name} executed successfully"
+            
+            console.print(Panel(panel_content, border_style="cyan"))
+            
+            messages.append({
+                "tool_call_id": tool_call.id,
+                "role": "tool",
+                "content": str(tool_response),
+            })
+        except Exception as e:
+            console.print(f"[red]✗ Error executing {function_name}: {e}[/red]")
+            messages.append({
+                "tool_call_id": tool_call.id,
+                "role": "tool",
+                "content": f"Error executing tool: {str(e)}",
+            })
     return messages
