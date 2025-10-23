@@ -1,9 +1,9 @@
 import json
 from typing import Any, Callable
 
-
 import weave
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr
+
 from deep_research_bot.utils import function_tool, perform_tool_calls, console, estimate_token_count
 from deep_research_bot.tools import call_model
 
@@ -14,8 +14,11 @@ class AgentState(BaseModel):
     step: int = Field(default=0)
     final_assistant_content: str | None = None # Populated at the end of a run
 
-
-from pydantic import PrivateAttr, BaseModel
+    def new(self, **updates):
+        data = self.model_dump()
+        data.update(updates)
+        # Re-validate and re-run model_post_init:
+        return type(self).model_validate(data)
 
 MODEL_SMALL = "Qwen/Qwen3-235B-A22B-Instruct-2507"
 
@@ -144,7 +147,11 @@ class SimpleAgent:
             # Add an error message to history to indicate failure
             messages.append({"role": "assistant", "content": f"Agent error in step: {str(e)}"})
             final_assistant_content = f"Agent error in step {step}: {str(e)}"
-        return self.state_class(messages=messages, step=step, final_assistant_content=final_assistant_content)
+        return state.new(
+            messages=messages,
+            step=step,
+            final_assistant_content=final_assistant_content
+            )
 
     @weave.op(name="SimpleAgent.run")
     def run(self, user_prompt: str, max_turns: int = 10, **state_kwargs: Any) -> AgentState:
