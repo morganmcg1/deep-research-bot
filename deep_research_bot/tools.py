@@ -15,14 +15,15 @@ load_dotenv()
 WANDB_ENTITY = os.getenv("WANDB_ENTITY", "wandb-applied-ai-team")
 WANDB_PROJECT = os.getenv("WANDB_PROJECT", "london-workshop-2025")
 DEFAULT_MODEL_NAME = os.getenv("DEFAULT_MODEL_NAME", "Qwen/Qwen3-235B-A22B-Instruct-2507")
+WANDB_BASE_URL = os.getenv("WANDB_BASE_URL", "https://api.inference.wandb.ai/v1")
 
 async_oai_client = openai.AsyncOpenAI(
-    base_url='https://api.inference.wandb.ai/v1',
+    base_url=WANDB_BASE_URL,
     api_key=os.getenv("WANDB_API_KEY"),
     project=f"{WANDB_ENTITY}/{WANDB_PROJECT}")
 
 oai_client = openai.OpenAI(
-    base_url='https://api.inference.wandb.ai/v1',
+    base_url=WANDB_BASE_URL,
     api_key=os.getenv("WANDB_API_KEY"),
     project=f"{WANDB_ENTITY}/{WANDB_PROJECT}"
 )
@@ -32,23 +33,49 @@ exa_client = Exa(api_key=os.getenv("EXA_API_KEY"))
 @weave.op
 async def async_call_model(model_name: str, messages: list[dict[str, Any]], **kwargs) -> str:
     "Call a model with the given messages and kwargs."
+
+    # hack to allow for using the client with a different base url
+    if kwargs.get("base_url"):
+        oai_client.base_url = kwargs.get("base_url")
+        kwargs.pop("base_url")
+
+    return_choices = False
+    if kwargs.get("return_choices", False):
+        return_choices = True
+        kwargs.pop("return_choices")
+
     response = await async_oai_client.chat.completions.create(
         model=model_name,
         messages=messages,
         **kwargs
     )
 
+    if return_choices:
+        return response.choices
     return response.choices[0].message
 
 
 @weave.op
 def call_model(model_name: str, messages: list[dict[str, Any]], **kwargs) -> str:
     "Call a model with the given messages and kwargs."
+
+    # hack to allow for using the client with a different base url
+    if kwargs.get("base_url"):
+        oai_client.base_url = kwargs.get("base_url")
+        kwargs.pop("base_url")
+
+    return_choices = False
+    if kwargs.get("return_choices", False):
+        return_choices = True
+        kwargs.pop("return_choices")
+
     response = oai_client.chat.completions.create(
         model=model_name,
         messages=messages,
         **kwargs
     )
+    if return_choices:
+        return response.choices
     return response.choices[0].message
 
 
@@ -113,7 +140,7 @@ async def async_exa_search_and_refine(query: str, num_results: int = 5) -> list[
             {"role":"system", "content": f"Your task is to extract from the search results only the info that is relevant to answer the query"},
             {"role": "user", "content": f"- query: {query}\n- Search result: {result.text}"}
         ]
-        refined_search = await async_call_model(model_name=DEFAULT_MODEL_NAME, messages=messages)
+        refined_search = await async_call_model(model_name=DEFAULT_MODEL_NAME, messages=messages, base_url=WANDB_BASE_URL)
         return refined_search.content
 
     output = []
@@ -154,7 +181,7 @@ def exa_search_and_refine(query: str, num_results: int = 5) -> list[dict[str, st
             {"role":"system", "content": f"Your task is to extract from the search results only the info that is relevant to answer the query"},
             {"role": "user", "content": f"- query: {query}\n- Search result: {result}"}
         ]
-        refined_search = call_model(model_name=DEFAULT_MODEL_NAME, messages=messages)
+        refined_search = call_model(model_name=DEFAULT_MODEL_NAME, messages=messages, base_url=WANDB_BASE_URL)
         return refined_search.content
 
     output = []
