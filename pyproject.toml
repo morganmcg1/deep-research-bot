@@ -20,7 +20,7 @@ dependencies = [
     "python-dotenv",
     "rich>=14.2.0",
     "simple-parsing>=0.1.7",
-    "weave>=0.52.10",
+    "weave>=0.52.11",
     "openpipe-art==0.5.1",
     "ipywidgets>=8.1.0"
 ]
