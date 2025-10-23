@@ -96,7 +96,7 @@ class AgentStateCompaction(AgentState):
         # Create the compacted message that replaces the old messages
         summary_msg = {
             "role": "assistant",
-            "content": f"# RESEARCH CONTEXT: \n\n{summary_response.content}"
+            "content": f"# Compact conversation summary: \n\n{summary_response.content}"
         }
         
         # Build new message history: system + summary + recent messages
