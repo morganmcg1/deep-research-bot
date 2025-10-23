@@ -11,6 +11,7 @@ from deep_research_bot.tools import call_model
 class AgentState(BaseModel):
     """Manages the state of the agent."""
     messages: list[dict[str, Any]] = Field(default_factory=list)
+    messages_and_choices: list[dict[str, Any]] = Field(default_factory=list)
     step: int = Field(default=0)
     final_assistant_content: str | None = None # Populated at the end of a run
 
@@ -112,23 +113,46 @@ class AgentStateCompaction(AgentState):
 
 class SimpleAgent:
     """A simple agent class with tracing, state, and tool processing."""
-    def __init__(self, model_name: str, system_message: str, tools: list[Callable], state_class: BaseModel = AgentState):
+    def __init__(self, model_name: str, system_message: str,
+    tools: list[Callable], state_class: BaseModel = AgentState, logprobs: bool = False,
+    return_choices: bool = False, base_url: str | None = None):
+        """
+        Args:
+            model_name: The name of the model to use.
+            system_message: The system message to use.
+            tools: The tools to use.
+            state_class: The state class to use.
+            art_rl_completions: Whether to return the Choices object and logprobsfrom the model call.
+        """
         self.model_name = model_name
         self.system_message = system_message
         self.tools = [function_tool(t) for t in tools] # add schemas to the tools
         self.state_class = state_class
-    
+        self.logprobs = logprobs # whether to return logprobs from the model call
+        self.return_choices = return_choices # whether to return the Choices object from the model call
+        self.base_url = base_url # the base url to use for the model call
+
     @weave.op(name="SimpleAgent.step")
     def step(self, state: AgentState) -> AgentState:
         step = state.step + 1
         messages = state.messages
+        messages_and_choices = state.messages_and_choices
         final_assistant_content = None
         try:
             # call model with tools
             response = call_model(
-                model_name=self.model_name, 
-                messages=messages, 
-                tools=[t.tool_schema for t in self.tools])
+                model_name=self.model_name,
+                messages=messages,
+                tools=[t.tool_schema for t in self.tools],
+                logprobs=self.logprobs,
+                return_choices=self.return_choices,
+                base_url=self.base_url
+                )
+
+            # if returning the Choices object, save it to state and then return the message
+            if self.return_choices:
+                messages_and_choices.extend([r.model_dump() for r in response])
+                response = response[0].message
 
             # add the response to the messages
             messages.append(response.model_dump())
@@ -138,6 +162,7 @@ class SimpleAgent:
                 # perform the tool calls
                 tool_outputs = perform_tool_calls(tools=self.tools, tool_calls=response.tool_calls)
                 messages.extend(tool_outputs)
+                messages_and_choices.extend(tool_outputs)
 
             # LLM gave content response
             else:
@@ -149,6 +174,7 @@ class SimpleAgent:
             final_assistant_content = f"Agent error in step {step}: {str(e)}"
         return state.new(
             messages=messages,
+            messages_and_choices=messages_and_choices,
             step=step,
             final_assistant_content=final_assistant_content
             )
