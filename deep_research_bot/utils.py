@@ -6,9 +6,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.console import Console as RichConsole
 from typing import Any, Callable, get_type_hints
-# from openai.types.chat.chat_completion_message_function_tool_call import ChatCompletionMessageFunctionToolCall  # no supported in openai <2.0
-from pydantic import BaseModel, Field
-
+from openai.types.chat.chat_completion_message_function_tool_call import ChatCompletionMessageFunctionToolCall
 
 
 class Console(RichConsole):
@@ -16,6 +14,27 @@ class Console(RichConsole):
         return self.print(Markdown(text))
 
 console = Console()
+
+def estimate_token_count(messages: list[dict[str, Any]]) -> int:
+    """
+    Estimate token count for messages using character-based heuristic. 4 tokens per character.
+    """
+    total_chars = 0
+    
+    for message in messages:
+        # Convert entire message to string and count characters
+        # This includes role, content, and any other fields
+        message_str = json.dumps(message)
+        total_chars += len(message_str)
+    
+    # Rough heuristic: 4 characters ≈ 1 token
+    base_estimate = total_chars / 4
+    
+    # Add 10% overhead for message formatting 
+    # (things like <|start|>assistant, etc.)
+    with_overhead = base_estimate * 1.1
+    
+    return int(with_overhead)
 
 
 def _generate_tool_schema(func: Callable) -> dict:
@@ -111,7 +130,7 @@ def function_tool(func: Callable) -> Callable:
         func.is_tool = False
     return func
 
-def perform_tool_calls(tools: list[Callable], tool_calls: list) -> list[dict]:
+def perform_tool_calls(tools: list[Callable], tool_calls: list[ChatCompletionMessageFunctionToolCall]) -> list[dict]:
     "Perform the tool calls and return the messages with the tool call results"
     messages = []
     for tool_call in tool_calls:
@@ -130,7 +149,8 @@ def perform_tool_calls(tools: list[Callable], tool_calls: list) -> list[dict]:
                 "role": "tool",
                 "content": f"Error: The JSON format for {function_name} was invalid. Please ensure the argument is properly formatted JSON with all text inside the parameter value.",
             })
-            continue
+            # no reason to continue if the JSON is invalid
+            return messages
         
         try:
             with console.status(f"[bold cyan]Executing {function_name}...[/bold cyan]"):
@@ -160,13 +180,5 @@ def perform_tool_calls(tools: list[Callable], tool_calls: list) -> list[dict]:
                 "role": "tool",
                 "content": f"Error executing tool: {str(e)}",
             })
+            
     return messages
-
-
-class AgentState(BaseModel):
-    """Manages the state of the agent."""
-    messages: list[dict[str, Any]] = Field(default_factory=list)
-    step: int = Field(default=0)
-    final_assistant_content: str | None = None # Populated at the end of a run
-
-
