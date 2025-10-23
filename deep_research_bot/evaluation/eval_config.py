@@ -1,9 +1,14 @@
+import os
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
 from dotenv import load_dotenv
 load_dotenv()
+
+JUDGE_MODEL_NAME = os.getenv("JUDGE_MODEL_NAME", "deepseek-ai/DeepSeek-R1-0528")
+WANDB_ENTITY = os.getenv("WANDB_ENTITY", "wandb-applied-ai-team")
+WANDB_PROJECT = os.getenv("WANDB_PROJECT", "london-workshop-2025")
 
 class EvaluationMode(str, Enum):
     """Evaluation execution modes."""
@@ -24,13 +29,13 @@ class EvalConfig:
     criteria: Path = Path("data/criteria_data/criteria.jsonl")
     language: str = "en"  # Language filter: 'all', 'en', or 'zh'
     limit: int | None = None  # Optional cap on number of prompts
-    judge_model: str = "gpt-5-nano-2025-08-07"  # LLM judge model name
+    judge_model: str = JUDGE_MODEL_NAME  # LLM judge model name
     temperature: float = 1.0
     reasoning_effort: str = "low"
     output: Path = Path("race_raw_results.jsonl")
     summary: Path = Path("race_summary.json")
-    wandb_entity: str | None = "wandb-applied-ai-team"
-    wandb_project: str | None = "london-workshop-2025"
+    wandb_entity: str | None = WANDB_ENTITY
+    wandb_project: str | None = WANDB_PROJECT
     evaluation_name: str = "deep_research_race_eval"
     trials: int = 1
     max_retries: int = 5

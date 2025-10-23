@@ -17,9 +17,6 @@ and continues to write JSONL + summary files for local inspection, but the core
 scoring loop now flows through `weave.Evaluation` so that every run is traced in
 Weights & Biases Weave.
 """
-
-from __future__ import annotations
-
 import asyncio
 import functools
 import inspect
@@ -36,20 +33,23 @@ from typing import (
     Iterable,
     Sequence,
 )
-from tenacity import retry, stop_after_attempt, wait_exponential
+
 import weave
 from dotenv import load_dotenv
-from .judge_prompts import (
+from openai import OpenAI
+from pydantic import BaseModel
+from simple_parsing import ArgumentParser
+from tenacity import retry, stop_after_attempt, wait_exponential
+
+from deep_research_bot.evaluation.eval_config import EvalConfig, EvaluationMode
+from deep_research_bot.evaluation.judge_prompts import (
     SCORE_PROMPT_EN,
     SCORE_PROMPT_ZH,
     SYSTEM_PROMPT_EN,
     SYSTEM_PROMPT_ZH,
     JudgeOutput,
 )
-from .eval_config import EvalConfig, EvaluationMode
-from openai import OpenAI
-from pydantic import BaseModel, Field, PrivateAttr
-from simple_parsing import ArgumentParser
+from deep_research_bot.tools import oai_client
 
 warnings.filterwarnings("ignore", message=".*UnsupportedFieldAttributeWarning.*")
 warnings.filterwarnings("ignore", message=".*Hub is deprecated.*")
@@ -320,7 +320,6 @@ def build_judge_prompt(
     wait=wait_exponential(multiplier=1, min=1, max=8),
 )
 def call_judge(
-    client: OpenAI,
     prompt: str,
     system_prompt: str,
     model: str,
@@ -350,7 +349,7 @@ def call_judge(
     else:
         llm_kwargs["temperature"] = temperature
     
-    response = client.chat.completions.create(
+    response = oai_client.chat.completions.create(
         model=model,
         temperature=temperature,
         messages=[
@@ -450,9 +449,7 @@ class DeepResearchScorer(weave.Scorer):
     criteria: dict[str, Any] = {}
 
     def _call_judge_sync(self, judge_prompt: str, system_prompt: str) -> JudgeOutput:
-        client = OpenAI(api_key=self.api_key or None)
         return call_judge(
-            client=client,
             system_prompt=system_prompt,
             prompt=judge_prompt,
             model=self.judge_model,
