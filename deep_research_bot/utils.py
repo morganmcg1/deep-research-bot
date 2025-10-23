@@ -6,7 +6,6 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.console import Console as RichConsole
 from typing import Any, Callable, get_type_hints
-from openai.types.chat.chat_completion_message_function_tool_call import ChatCompletionMessageFunctionToolCall
 
 
 class Console(RichConsole):
@@ -130,7 +129,7 @@ def function_tool(func: Callable) -> Callable:
         func.is_tool = False
     return func
 
-def perform_tool_calls(tools: list[Callable], tool_calls: list[ChatCompletionMessageFunctionToolCall]) -> list[dict]:
+def perform_tool_calls(tools: list[Callable], tool_calls: list[Any]) -> list[dict]:
     "Perform the tool calls and return the messages with the tool call results"
     messages = []
     for tool_call in tool_calls:
