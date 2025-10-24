@@ -1,4 +1,5 @@
 # Global Configuration & Setup
+import asyncio
 import inspect
 import json
 from enum import Enum
@@ -130,6 +131,19 @@ def function_tool(func: Callable) -> Callable:
         func.is_tool = False
     return func
 
+def execute_tool(tool: Callable, **kwargs) -> Any:
+    "Execute tool for sync and async"
+    import asyncio
+    
+    #if tool is async, execute it
+    if inspect.iscoroutinefunction(tool):
+        return asyncio.run(tool(**kwargs))
+    #if tool is sync, execute it
+    elif inspect.isfunction(tool):
+        return tool(**kwargs)
+    else:
+        raise ValueError(f"Tool {tool.__name__} is not a function or async function")
+
 def perform_tool_calls(tools: list[Callable], tool_calls: list[ChatCompletionMessageFunctionToolCall]) -> list[dict]:
     "Perform the tool calls and return the messages with the tool call results"
     messages = []
@@ -155,7 +169,7 @@ def perform_tool_calls(tools: list[Callable], tool_calls: list[ChatCompletionMes
         try:
             with console.status(f"[bold cyan]Executing {function_name}...[/bold cyan]"):
                 tool = _get_tool(tools, function_name)
-                tool_response = tool(**function_args)
+                tool_response = execute_tool(tool, **function_args)
             
             # Create panel content
             panel_content = f"[bold cyan]🔧 Tool Call:[/bold cyan] {function_name}\n\n"
