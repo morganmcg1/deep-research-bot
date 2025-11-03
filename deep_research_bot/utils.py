@@ -1,7 +1,9 @@
 # Global Configuration & Setup
+from collections.abc import Mapping, Sequence
 import inspect
 import json
 from enum import Enum
+from functools import partial
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.console import Console as RichConsole
@@ -36,19 +38,37 @@ def estimate_token_count(messages: list[dict[str, Any]]) -> int:
     return int(with_overhead)
 
 
+def _unwrap_callable(func: Callable) -> Callable:
+    """Return the underlying function for wrappers and partials."""
+    base_func = inspect.unwrap(func)
+
+    # inspect.unwrap stops at functools.partial, so peel them manually
+    while isinstance(base_func, partial):
+        base_func = inspect.unwrap(base_func.func)
+
+    return base_func
+
+
+def _callable_name(func: Callable) -> str:
+    """Best-effort friendly name for a callable, even if wrapped."""
+    base_func = _unwrap_callable(func)
+    return getattr(base_func, "__name__", base_func.__class__.__name__)
+
+
 def _generate_tool_schema(func: Callable) -> dict:
     """Given a Python function, generate a tool-compatible JSON schema.
     Handles basic types and Enums. Assumes docstrings are formatted for arg descriptions.
     """
     signature = inspect.signature(func)
     parameters = signature.parameters
-    type_hints = get_type_hints(func)
+    base_func = _unwrap_callable(func)
+    type_hints = get_type_hints(base_func)
 
     schema = {
         "type": "function",
         "function": {
-            "name": func.__name__,
-            "description": inspect.getdoc(func).split("\\n")[0] if inspect.getdoc(func) else "",
+            "name": _callable_name(func),
+            "description": inspect.getdoc(base_func).split("\\n")[0] if inspect.getdoc(base_func) else "",
             "parameters": {
                 "type": "object",
                 "properties": {},
@@ -57,7 +77,7 @@ def _generate_tool_schema(func: Callable) -> dict:
         },
     }
 
-    docstring = inspect.getdoc(func)
+    docstring = inspect.getdoc(base_func)
     param_descriptions = {}
     if docstring:
         args_section = False
@@ -119,11 +139,19 @@ def function_tool(func: Callable) -> Callable:
     """Attaches a tool schema to the function and marks it as a tool.
     Call this *after* defining your function: my_func = function_tool(my_func)
     """
+    base_name = _callable_name(func)
     try:
         func.tool_schema = _generate_tool_schema(func)
         func.is_tool = True # Mark it as a tool
+
+        # Ensure wrapped callables expose a __name__ attribute for lookup
+        if not hasattr(func, "__name__") or func.__name__ == func.__class__.__name__:
+            try:
+                func.__name__ = base_name
+            except AttributeError:
+                pass
     except Exception as e:
-        console.print(f"Error processing tool {func.__name__}: {e}")
+        console.print(f"Error processing tool {base_name}: {e}")
         # Optionally raise or mark as failed
         func.tool_schema = None
         func.is_tool = False
@@ -181,3 +209,12 @@ def perform_tool_calls(tools: list[Callable], tool_calls: list[Any]) -> list[dic
             })
             
     return messages
+
+def _to_plain(obj):
+    if hasattr(obj, "model_dump"):
+        return obj.model_dump()
+    if isinstance(obj, Mapping):
+        return {k: _to_plain(v) for k, v in obj.items()}
+    if isinstance(obj, Sequence) and not isinstance(obj, (str, bytes)):
+        return [_to_plain(v) for v in obj]
+    return obj
