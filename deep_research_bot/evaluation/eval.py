@@ -49,7 +49,6 @@ from deep_research_bot.evaluation.judge_prompts import (
     SYSTEM_PROMPT_ZH,
     JudgeOutput,
 )
-from deep_research_bot.tools import oai_client
 
 warnings.filterwarnings("ignore", message=".*UnsupportedFieldAttributeWarning.*")
 warnings.filterwarnings("ignore", message=".*Hub is deprecated.*")
@@ -320,6 +319,7 @@ def build_judge_prompt(
     wait=wait_exponential(multiplier=1, min=1, max=8),
 )
 def call_judge(
+    api_key: str,
     prompt: str,
     system_prompt: str,
     model: str,
@@ -329,6 +329,15 @@ def call_judge(
     """
     Call the LLM judge and return parsed Pydantic model.
     """
+
+    WANDB_ENTITY = os.getenv("WANDB_ENTITY", "")
+    WANDB_PROJECT = os.getenv("WANDB_PROJECT", "london-workshop-2025")
+
+    oai_client = OpenAI(
+        api_key=api_key,
+        base_url="https://api.inference.wandb.ai/v1",
+        project=f"{WANDB_ENTITY}/{WANDB_PROJECT}"
+    )
 
     llm_kwargs = {
         "messages": [
@@ -450,6 +459,7 @@ class DeepResearchScorer(weave.Scorer):
 
     def _call_judge_sync(self, judge_prompt: str, system_prompt: str) -> JudgeOutput:
         return call_judge(
+            api_key=self.api_key,
             system_prompt=system_prompt,
             prompt=judge_prompt,
             model=self.judge_model,
