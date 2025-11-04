@@ -104,7 +104,6 @@ class AgentStateCompaction(AgentState):
         
         # Build new message history: system + summary + recent messages
         new_messages = [system_msg, request_msg, summary_msg] 
-
         
         # Return a new compacted message history
         return new_messages
@@ -138,7 +137,6 @@ class SimpleAgent:
                 # perform the tool calls
                 tool_outputs = perform_tool_calls(tools=self.tools, tool_calls=response.tool_calls)
                 messages.extend(tool_outputs)
-
             # LLM gave content response
             else:
                 final_assistant_content = response.content
@@ -159,8 +157,15 @@ class SimpleAgent:
             {"role": "system", "content": self.system_message},
             {"role": "user", "content": user_prompt}], **state_kwargs)
         for _ in range(max_turns):
+            state.messages.append(
+                {"role": "assistant", 
+                "content": f"You are in step {state.step+1}/{max_turns} of the agent loop. You have {max_turns - state.step - 1} turns left."})
             console.rule(f"Agent Loop Turn {state.step+1}/{max_turns}")
             state = self.step(state)
             if state.final_assistant_content:
                 return state
-        return state
+        # we couldn't exit earlier
+        state.messages.append(
+            {"role": "assistant", 
+            "content": "The agent loop has finished. Produce an answer to the user's question."})
+        return self.step(state)
