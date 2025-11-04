@@ -334,7 +334,7 @@ def call_judge(
     WANDB_PROJECT = os.getenv("WANDB_PROJECT", "london-workshop-2025")
 
     oai_client = OpenAI(
-        api_key=api_key,
+        api_key=os.environ.get("WANDB_API_KEY"),
         base_url="https://api.inference.wandb.ai/v1",
         project=f"{WANDB_ENTITY}/{WANDB_PROJECT}"
     )
