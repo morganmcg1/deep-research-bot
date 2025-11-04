@@ -13,13 +13,16 @@ Eval questions and answers taken from the RACE evals from [Deepresearch Bench](h
 }
 ```
 
-## Running the Weave-Instrumented Evaluation
+## London Fully-Connected 2025 Workshop
 
-- CLI: `uv run python evaluation/eval.py --target data/model_outputs.jsonl --api-key $OPENAI_API_KEY`
-- Programmatic: call `evaluate_agent(dr.run, config)` from `evaluation.eval` to weave-trace an agent directly (trials, project names, and custom attributes come from `EvalConfig`).
-- Every evaluation writes JSONL + summary files locally and publishes traces to the Weave project configured via `EvalConfig`.
+This repo contains the material for the "Building Agents from Scratch" workshop.
 
-## Tests
+- [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/morganmcg1/deep-research-bot/blob/main/notebooks/01_simple_agent.ipynb) 01_simple_agent.ipynb
+- [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/morganmcg1/deep-research-bot/blob/main/notebooks/02_deep_research_agent.ipynb) 02_deep_research_agent.ipynb
 
-- Run the test suite with `uv run pytest`.
-- The end-to-end weave test requires a live W&B project; set `WANDB_ENTITY` and `WANDB_PROJECT` before running to enable it (it is skipped otherwise).
+## Setup
+
+- http://wandb.ai/site account
+- We are using the Exa research engine: https://exa.ai/exa-api
+- Python interpreter or run in Google colab: You will need your google account.
+
