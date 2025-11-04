@@ -450,11 +450,11 @@ class DeepResearchScorer(weave.Scorer):
     """
 
     name: str = "deep_research_scores"
-    judge_model: str = "gpt-5-nano-2025-08-07"
+    judge_model: str = "deepseek-ai/DeepSeek-R1-0528"
     judge_prompt: str = ""
     temperature: float = 1.0
     reasoning_effort: str = "low",
-    api_key: str = ""
+    api_key: str = os.environ.get("WANDB_API_KEY")
     criteria: dict[str, Any] = {}
 
     def _call_judge_sync(self, judge_prompt: str, system_prompt: str) -> JudgeOutput:
