@@ -1,12 +1,14 @@
+import asyncio
+from collections.abc import Coroutine
 import os
 from datetime import datetime
-from typing import Any
+from typing import Any, Sequence
+from threading import Thread, current_thread, main_thread
 
 import openai
 import weave
 from dotenv import load_dotenv
 from exa_py import Exa
-from weave.flow.util import async_foreach
 
 from deep_research_bot.utils import function_tool, console
 
@@ -29,6 +31,87 @@ oai_client = openai.OpenAI(
 )
 
 exa_client = Exa(api_key=os.getenv("EXA_API_KEY"))
+
+_DEFAULT_MAX_CONCURRENCY = 5
+
+
+def _safe_console_print(message: str) -> None:
+    """Print via Rich when on the main thread, otherwise fall back to stdout."""
+
+    if current_thread() is main_thread():
+        console.print(message)
+    else:
+        print(message)
+
+
+def _run_coroutine_sync(coro: Coroutine[Any, Any, Any]) -> Any:
+    """Execute a coroutine from synchronous code, falling back to a worker thread if needed."""
+
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: dict[str, Any] = {}
+    error: dict[str, BaseException] = {}
+
+    def runner() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except BaseException as exc:  # propagate cancellation and system-exit
+            error["exc"] = exc
+
+    thread = Thread(target=runner, daemon=True)
+    thread.start()
+    thread.join()
+
+    if exc := error.get("exc"):
+        raise exc
+
+    return result.get("value")
+
+
+async def _refine_search_results(
+    query: str,
+    results: Sequence[Any],
+    *,
+    max_concurrency: int = _DEFAULT_MAX_CONCURRENCY,
+) -> list[dict[str, str]]:
+    """Refine search results concurrently using the async OpenAI client."""
+    if not results:
+        return []
+
+    semaphore = asyncio.Semaphore(max(1, max_concurrency))
+
+    async def refine_single(index: int, result: Any) -> dict[str, str]:
+        async with semaphore:
+            _safe_console_print(f"Refining result {index + 1}")
+            messages = [
+                {
+                    "role": "system",
+                    "content": (
+                        "Your task is to extract from the search results only the info "
+                        "that is relevant to answer the query"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": f"- query: {query}\n- Search result: {result.text}",
+                },
+            ]
+            refined_search = await async_call_model(
+                model_name=DEFAULT_MODEL_NAME,
+                messages=messages,
+                base_url=WANDB_BASE_URL,
+            )
+            return {
+                "title": result.title,
+                "text": refined_search.content,
+                "url": result.url,
+            }
+
+    tasks = [refine_single(idx, result) for idx, result in enumerate(results)]
+    return await asyncio.gather(*tasks)
 
 @weave.op
 async def async_call_model(model_name: str, messages: list[dict[str, Any]], **kwargs) -> str:
@@ -132,26 +215,13 @@ async def async_exa_search_and_refine(query: str, num_results: int = 5) -> list[
             - text: The text content of the web page
             - url: The URL of the web page
     """
-    search_results = exa_client.search_and_contents(query=query, type='auto', num_results=num_results)
-    
-    @weave.op
-    async def refine_search_result(result):
-        messages = [
-            {"role":"system", "content": f"Your task is to extract from the search results only the info that is relevant to answer the query"},
-            {"role": "user", "content": f"- query: {query}\n- Search result: {result.text}"}
-        ]
-        refined_search = await async_call_model(model_name=DEFAULT_MODEL_NAME, messages=messages, base_url=WANDB_BASE_URL)
-        return refined_search.content
+    search_results = exa_client.search_and_contents(
+        query=query,
+        type="auto",
+        num_results=num_results,
+    )
 
-    output = []
-    async for _, result, refined_text in async_foreach(search_results.results, refine_search_result, max_concurrent_tasks=5):
-        output.append(
-            {"title": result.title,
-            "text": refined_text,
-            "url": result.url
-            }
-        )
-    return output
+    return await _refine_search_results(query, search_results.results)
 
 
 @weave.op 
@@ -173,28 +243,14 @@ def exa_search_and_refine(query: str, num_results: int = 5) -> list[dict[str, st
             - text: The text content of the web page
             - url: The URL of the web page
     """
-    search_results = exa_client.search_and_contents(query=query, type='auto', num_results=num_results)
-    
-    @weave.op
-    def refine_search_result(result, query):
-        messages = [
-            {"role":"system", "content": f"Your task is to extract from the search results only the info that is relevant to answer the query"},
-            {"role": "user", "content": f"- query: {query}\n- Search result: {result}"}
-        ]
-        refined_search = call_model(model_name=DEFAULT_MODEL_NAME, messages=messages, base_url=WANDB_BASE_URL)
-        return refined_search.content
-
-    output = []
-    for item, result in enumerate(search_results.results):
-        console.print(f"Refining result {item+1}")
-        refined_text = refine_search_result(result.text, query)
-        output.append(
-            {"title": result.title,
-            "text": refined_text,
-            "url": result.url
-            }
-        )
-    return output
+    search_results = exa_client.search_and_contents(
+        query=query,
+        type="auto",
+        num_results=num_results,
+    )
+    return _run_coroutine_sync(
+        _refine_search_results(query, search_results.results)
+    )
 
 
 ## Tools for the Deep Research Agent
