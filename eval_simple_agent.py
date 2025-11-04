@@ -15,7 +15,7 @@ from deep_research_bot.utils import console
 @dataclass
 class Args:
     model_name: str = "Qwen/Qwen3-235B-A22B-Instruct-2507"
-    wandb_entity: str = "wandb-applied-ai-team"
+    wandb_entity: str = ""
     wandb_project: str = "london-workshop-2025"
     trials: int = 2 # Number of trials to run
     limit: int = 20 # Number of prompts to evaluate

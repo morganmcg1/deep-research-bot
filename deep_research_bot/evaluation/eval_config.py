@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 JUDGE_MODEL_NAME = os.getenv("JUDGE_MODEL_NAME", "deepseek-ai/DeepSeek-R1-0528")
-WANDB_ENTITY = os.getenv("WANDB_ENTITY", "wandb-applied-ai-team")
+WANDB_ENTITY = os.getenv("WANDB_ENTITY", "")
 WANDB_PROJECT = os.getenv("WANDB_PROJECT", "london-workshop-2025")
 
 class EvaluationMode(str, Enum):

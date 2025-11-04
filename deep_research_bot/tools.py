@@ -12,7 +12,7 @@ from deep_research_bot.utils import function_tool, console
 
 load_dotenv()
 
-WANDB_ENTITY = os.getenv("WANDB_ENTITY", "wandb-applied-ai-team")
+WANDB_ENTITY = os.getenv("WANDB_ENTITY", "")
 WANDB_PROJECT = os.getenv("WANDB_PROJECT", "london-workshop-2025")
 DEFAULT_MODEL_NAME = os.getenv("DEFAULT_MODEL_NAME", "Qwen/Qwen3-235B-A22B-Instruct-2507")
 
