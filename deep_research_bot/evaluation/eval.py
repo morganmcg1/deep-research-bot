@@ -285,7 +285,7 @@ def calculate_weighted_scores(
 # LLM interaction utilities.
 # ---------------------------------------------------------------------------
 
-
+@weave.op
 def build_judge_prompt(
     language: str,
     task_prompt: str,
@@ -898,6 +898,7 @@ def run_evaluation(
             temperature=eval_config.temperature,
             reasoning_effort=eval_config.reasoning_effort,
             api_key=os.environ.get("WANDB_API_KEY"),
+            criteria=criteria_map,
         )],
         trials=eval_config.trials,
     )
