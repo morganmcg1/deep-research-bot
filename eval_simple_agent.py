@@ -21,7 +21,7 @@ class Args:
     limit: int = 20 # Number of prompts to evaluate
     weave_parallelism: int = 10 # Number of parallel requests to the API
     evaluation_name: str = "SimpleAgent" # Name of the evaluation
-    tools: list[str] = field(default_factory=lambda: ["exa_search_and_refine"])  # names from deep_research_bot.tools
+    tools: list[str] = field(default_factory=lambda: ["exa_search"])  # names from deep_research_bot.tools
     max_turns: int = 10 # Max turns for the agent to run
     use_compaction: bool = False # Enable compaction, defaults to False
     max_tokens: int = 128_000 # Max tokens for the agent to trigger compaction

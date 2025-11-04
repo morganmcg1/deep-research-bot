@@ -29,6 +29,8 @@ oai_client = openai.OpenAI(
 
 exa_client = Exa(api_key=os.getenv("EXA_API_KEY"))
 
+EXA_MAX_TEXT_CHARACTERS = 1000
+
 @weave.op
 async def async_call_model(model_name: str, messages: list[dict[str, Any]], **kwargs) -> str:
     "Call a model with the given messages and kwargs."
@@ -54,7 +56,7 @@ def call_model(model_name: str, messages: list[dict[str, Any]], **kwargs) -> str
 
 @weave.op
 @function_tool
-def exa_search(query: str, num_results: int = 5) -> list[dict[str, str]]:
+def exa_search(query: str, num_results: int = 12) -> list[dict[str, str]]:
     """Perform a search query on the web and retrieve the most relevant URLs and web content.
     
     This function uses the Exa search API to find relevant web pages based on the query
@@ -63,7 +65,7 @@ def exa_search(query: str, num_results: int = 5) -> list[dict[str, str]]:
     Args:
         query: The search query. Use detailed, specific queries for better results.
                The quality of results depends on the specificity of the query.
-        num_results: The number of search results to retrieve. Defaults to 5.
+        num_results: The number of search results to retrieve. Defaults to 12.
     
     Returns:
         A list of dictionaries, each containing:
@@ -71,7 +73,12 @@ def exa_search(query: str, num_results: int = 5) -> list[dict[str, str]]:
             - text: The text content of the web page
             - url: The URL of the web page
     """
-    search_results = exa_client.search_and_contents(query=query, type='auto', num_results=num_results)
+    search_results = exa_client.search_and_contents(
+        query=query, 
+        type='auto', 
+        num_results=num_results,
+        # max characters to return in the text
+        text = {"max_characters": EXA_MAX_TEXT_CHARACTERS})
     
     output = []
     for result in search_results.results:
