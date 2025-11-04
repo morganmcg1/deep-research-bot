@@ -320,6 +320,8 @@ def build_judge_prompt(
 )
 def call_judge(
     api_key: str,
+    wandb_project: str,
+    wandb_entity: str,
     prompt: str,
     system_prompt: str,
     model: str,
@@ -330,13 +332,10 @@ def call_judge(
     Call the LLM judge and return parsed Pydantic model.
     """
 
-    WANDB_ENTITY = os.getenv("WANDB_ENTITY", "")
-    WANDB_PROJECT = os.getenv("WANDB_PROJECT", "london-workshop-2025")
-
     oai_client = OpenAI(
         api_key=os.environ.get("WANDB_API_KEY"),
         base_url="https://api.inference.wandb.ai/v1",
-        project=f"{WANDB_ENTITY}/{WANDB_PROJECT}"
+        project=f"{wandb_entity}/{wandb_project}"
     )
 
     llm_kwargs = {
@@ -455,11 +454,20 @@ class DeepResearchScorer(weave.Scorer):
     temperature: float = 1.0
     reasoning_effort: str = "low",
     api_key: str = os.environ.get("WANDB_API_KEY")
-    criteria: dict[str, Any] = {}
+    criteria: dict[str, Any] = {}   
+    wandb_project: str = os.environ.get("WANDB_PROJECT", "london-workshop-2025")
+    wandb_entity: str = ""
 
     def _call_judge_sync(self, judge_prompt: str, system_prompt: str) -> JudgeOutput:
+        if self.wandb_entity is None:
+            raise ValueError("wandb_entity   is not set, please set it in DeepResearchScorer")
+        if self.wandb_project is None:
+            raise ValueError("wandb_project is not set, please set it in DeepResearchScorer")
+
         return call_judge(
             api_key=self.api_key,
+            wandb_project=self.wandb_project,
+            wandb_entity=self.wandb_entity,
             system_prompt=system_prompt,
             prompt=judge_prompt,
             model=self.judge_model,
@@ -884,6 +892,8 @@ def run_evaluation(
         name=eval_config.evaluation_name,
         dataset=dataset_rows,
         scorers=[DeepResearchScorer(
+            wandb_project=eval_config.wandb_project,
+            wandb_entity=eval_config.wandb_entity,
             judge_model=eval_config.judge_model,
             temperature=eval_config.temperature,
             reasoning_effort=eval_config.reasoning_effort,
