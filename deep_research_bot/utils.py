@@ -1,15 +1,17 @@
 # Global Configuration & Setup
-from collections.abc import Mapping, Sequence
 import inspect
 import json
+from collections.abc import Mapping, Sequence
 from enum import Enum
 from functools import partial
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.console import Console as RichConsole
 from typing import Any, Callable, get_type_hints
 
+from pydantic import BaseModel, ValidationError
+from rich.console import Console as RichConsole
+from rich.markdown import Markdown
+from rich.panel import Panel
 
+import art
 class Console(RichConsole):
     def md(self, text): 
         return self.print(Markdown(text))
@@ -218,3 +220,101 @@ def _to_plain(obj):
     if isinstance(obj, Sequence) and not isinstance(obj, (str, bytes)):
         return [_to_plain(v) for v in obj]
     return obj
+
+
+LOGPROB_KEYS: set[str] = {"logprobs", "top_logprobs"}
+
+
+def _strip_logprob_fields(value: Any) -> Any:
+    """Remove logprob-related keys from nested message structures."""
+    if isinstance(value, dict):
+        return {
+            key: _strip_logprob_fields(nested)
+            for key, nested in value.items()
+            if key not in LOGPROB_KEYS
+        }
+
+    if isinstance(value, list):
+        return [_strip_logprob_fields(item) for item in value]
+
+    if isinstance(value, BaseModel):
+        sanitized = _strip_logprob_fields(value.model_dump())
+        try:
+            return value.__class__.model_validate(sanitized)
+        except ValidationError:
+            return sanitized
+
+    return value
+
+
+def _sanitize_messages_and_choices(
+    messages_and_choices: Sequence[Any],
+) -> list[Any]:
+    return [_strip_logprob_fields(message) for message in messages_and_choices]
+
+
+def _prepare_group_for_judge(group: art.TrajectoryGroup) -> art.TrajectoryGroup:
+    sanitized_trajectories: list[art.Trajectory] = []
+    for trajectory in group.trajectories:
+        sanitized_histories = [
+            history.__class__(
+                messages_and_choices=_sanitize_messages_and_choices(
+                    history.messages_and_choices
+                ),
+                tools=history.tools,
+            )
+            for history in trajectory.additional_histories
+        ]
+
+        sanitized_trajectories.append(
+            art.Trajectory(
+                messages_and_choices=_sanitize_messages_and_choices(
+                    trajectory.messages_and_choices
+                ),
+                tools=list(trajectory.tools) if trajectory.tools else None,
+                additional_histories=sanitized_histories,
+                reward=trajectory.reward,
+                metrics=trajectory.metrics.copy(),
+                auto_metrics=trajectory.auto_metrics.copy(),
+                metadata=trajectory.metadata.copy(),
+                logs=trajectory.logs.copy(),
+            )
+        )
+
+    judge_ready_group = art.TrajectoryGroup(sanitized_trajectories)
+    judge_ready_group.exceptions = group.exceptions  # type: ignore[attr-defined]
+    return judge_ready_group
+
+
+def _restore_logprobs(
+    original_group: art.TrajectoryGroup,
+    judged_group: art.TrajectoryGroup,
+) -> art.TrajectoryGroup:
+    if len(original_group.trajectories) != len(judged_group.trajectories):
+        raise ValueError(
+            "Judge returned a different number of trajectories than provided"
+        )
+
+    updated_trajectories: list[art.Trajectory] = []
+    for original, judged in zip(
+        original_group.trajectories, judged_group.trajectories
+    ):
+        updated_trajectories.append(
+            art.Trajectory(
+                messages_and_choices=list(original.messages_and_choices),
+                tools=list(original.tools) if original.tools else None,
+                additional_histories=[
+                    history.model_copy(deep=True)
+                    for history in original.additional_histories
+                ],
+                reward=judged.reward,
+                metrics=judged.metrics.copy(),
+                auto_metrics=judged.auto_metrics.copy(),
+                metadata=original.metadata.copy(),
+                logs=judged.logs.copy(),
+            )
+        )
+
+    restored_group = art.TrajectoryGroup(updated_trajectories)
+    restored_group.exceptions = original_group.exceptions  # type: ignore[attr-defined]
+    return restored_group
