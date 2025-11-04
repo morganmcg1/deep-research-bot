@@ -1,4 +1,4 @@
-# London Fully-Connected 2025 Workshop
+# London Fully Connected 2025 Workshop
 
 - [Notion](https://wandb.me/fc-london)
 
@@ -18,9 +18,9 @@ This repo contains the material for the "Building Agents from Scratch" workshop.
     - Get free $50 Exa API credits.
     - Coupon code: EXA50API
 
-# Evals
+## Evals
 
-## Deepresearch Bench
+### Deepresearch Bench
 
 Eval questions and answers taken from the RACE evals from [Deepresearch Bench](https://github.com/Ayanami0730/deep_research_bench)
 
