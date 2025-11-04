@@ -789,8 +789,8 @@ def run_evaluation(
     coroutine so the caller can ``await`` it without triggering
     ``asyncio.run`` nesting errors.
     """
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise ValueError("OPENAI_API_KEY is not set, please set it in the .env file.")
+    if not os.environ.get("WANDB_API_KEY"):
+        raise ValueError("WANDB_API_KEY is not set, please set it in the .env file.")
 
     if eval_config.debug:
         eval_config.limit = 2
@@ -877,7 +877,7 @@ def run_evaluation(
             judge_model=eval_config.judge_model,
             temperature=eval_config.temperature,
             reasoning_effort=eval_config.reasoning_effort,
-            api_key=os.environ.get("OPENAI_API_KEY"),
+            api_key=os.environ.get("WANDB_API_KEY"),
         )],
         trials=eval_config.trials,
     )
